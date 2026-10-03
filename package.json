@@ -31,7 +31,10 @@
     "locale",
     "cordis.patch.yml",
     "README.md",
+    "README.zh-CN.md",
+    "CONTRIBUTING.md",
     "LICENSE",
+    "docs/assets",
     "docs/设计文档.md"
   ],
   "dsh": {

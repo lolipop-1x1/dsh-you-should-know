@@ -1,81 +1,151 @@
+![You Should Know: surface important facts and trade-offs while a task is running](docs/assets/hero.png)
+
 # You Should Know
 
-DeepSeek Harness 的任务提醒插件。在任务执行过程中，观察已有会话中的重要事实、方案取舍和必要知识，并在输入框上方提供简短提醒。
+[English](README.md) · [简体中文](README.zh-CN.md)
 
-提醒可以展开解释、标记为已了解或关闭。需要继续讨论时，插件把提醒和解释填入空白输入框，由用户发送；已有草稿不会被覆盖。
+[![Checks](https://github.com/lolipop-1x1/dsh-you-should-know/actions/workflows/check.yml/badge.svg)](https://github.com/lolipop-1x1/dsh-you-should-know/actions/workflows/check.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-提醒以悬浮面板显示，展开解释不会顶起聊天内容。可收起为小按钮，再点击查看；收起仅改变当前界面的显示，不提交反馈。
+A task reminder plugin for DeepSeek Harness. It observes the existing conversation while a task is running and surfaces important facts, trade-offs, and background knowledge you may have missed.
 
-## 兼容性
+- **Brief notes**: a floating panel above the input, with a minimize control, that does not push the conversation upward.
+- **Explanations on demand**: learn why a note matters, or mark a familiar topic as understood.
+- **Continue the discussion**: bring the note and explanation into the main session without overwriting drafts or attachments. You decide whether to send it.
+- **Your settings**: choose the language, observer model, check frequency, and per-turn limit; manage topic history across sessions.
 
-- DeepSeek Harness：`>=0.2.0-rc.2 <0.3.0-0`，覆盖从 `0.2.0-rc.2` 起的 0.2 系列，包括 `0.2.1-alpha.1`。
-- Node.js：`22.19.0` 或更高版本。
-- 界面：Web，以及使用相同输入区的桌面端。没有可展示输入区的 profile 不自动观察。
+![An English note and explanation about duplicate processing with at-least-once delivery; an existing attachment prevents draft insertion](docs/assets/reminder-en.jpg)
 
-当前为 `0.1.0` 开发版本，尚未发布到 npm。安装兼容声明使用版本范围；开发依赖与锁文件固定在最低支持版本 `0.2.0-rc.2`，并对 `0.2.1-alpha.1` 进行回归。范围内其他版本仍需注意预览 API 的变化；0.3 系列及以上需重新验证后调整范围。
+*Actual Harness acceptance-test screenshot using a fictional task. The header is an AI-generated conceptual illustration.*
 
-## 安装
+[Installation](#installation) · [Usage](#usage) · [Settings](#settings) · [How it works](#how-it-works) · [Usage and data](#usage-and-data) · [Development and contributing](#development-and-contributing)
 
-从源码构建安装包：
+## Installation
+
+### Requirements
+
+| Component | Requirement |
+| --- | --- |
+| DeepSeek Harness | `>=0.2.0-rc.2 <0.3.0-0` |
+| Node.js | `>=22.19.0` |
+| Interface | Web, and desktop clients using the same conversation input area |
+
+Development dependencies are locked to `0.2.0-rc.2`; CI covers both `0.2.0-rc.2` and `0.2.1-alpha.1`. The compatibility range covers the 0.2 series, but preview APIs may differ in other versions. The 0.3 series is not yet supported. Profiles without a supported input area do not start automatic observation.
+
+### Build an installation package from source
 
 ```sh
+git clone https://github.com/lolipop-1x1/dsh-you-should-know.git
+cd dsh-you-should-know
 npm ci
 npm run check
 npm pack
 ```
 
-将生成的 `dsh-you-should-know-0.1.0.tgz` 安装到目标 profile：
+Add the generated package to your Harness profile:
 
 ```sh
 dsh plugin --profile web add -w /absolute/path/dsh-you-should-know-0.1.0.tgz
 ```
 
-`web` 替换为实际 profile 名称；`-w` 用于允许 pnpm 在 profile 的 workspace 根安装。桌面端使用其安装入口或随附 CLI 管理原有 profile。安装后重启该 profile，使客户端模块加入界面。
+Replace `web` with your profile name and adjust the absolute package path. The `-w` option allows pnpm to install at the profile's workspace root. Desktop users can use the plugin installation interface or bundled CLI.
 
-已构建 tarball 无需在安装时运行源码构建。通过 Git 地址安装源码时，`prepare` 会安装开发依赖并构建；pnpm 10 及以上可能要求为本包单独授权构建。
+Restart the target Harness profile after installation so the host loads both plugin modules. Open **Settings → You Should Know** to confirm that the plugin loaded.
 
-## 使用
+A prebuilt package does not need a source build during installation. When installing source through a Git URL, `prepare` installs development dependencies and builds the plugin. pnpm 10 or later may require explicit build approval for this package.
 
-自动观察默认开启，观察模型默认跟随主会话。可在 **设置 → You Should Know** 中关闭“自动观察”。已保存的开关设置会继续保留。
+## Usage
 
-菜单支持独立选择 Harness 已配置的模型。选择观察模型不会改变主会话的模型；切回“跟随主会话模型”后，后续观察使用主会话当时的模型。
+Automatic observation is **enabled by default**, and the observer follows the main session model. Existing saved settings are preserved. Start a task normally; short tasks usually do not reach a check, and a note is not guaranteed on every turn.
 
-语言默认“跟随系统”，也可手动选择“中文”或“English”。跟随系统使用 Harness 当前界面语言，其他语言使用英文。设置同时控制插件界面与后续观察、解释请求的提示词；已经展示的内容保留原文。
+| Action | Result |
+| --- | --- |
+| Learn more | View the reason and impact; reuse an existing explanation in the same language when available |
+| Knew this already / Understood | Save the topic to reduce repeated notes |
+| Chat in main session | Insert the note and explanation only when there is no draft or attachment; you send it |
+| Dismiss | Close the note and briefly offer feedback options |
+| Minimize / Open note | Change the panel display without submitting feedback or marking the topic as understood |
 
-“观察步长”默认为 6，可选 12、18 或自定义正整数。步长按模型步骤计算，一个步骤可能包含多个工具调用；默认检查机会在第 7、13、19 步。“每轮检查次数上限”默认不限，也可选择预设或自定义非负整数，0 表示不限。每轮用户任务分别计数，实际发起的失败或取消检查也计入，展开解释不计入；插件重载保留本轮已用次数。
+Notes help you understand a task. They are not fact checks or execution reviews: they may miss important details or be inaccurate. Bring a note into the main session when you want to discuss it further.
 
-菜单中的“主题记录”列出全局共享的“已展示”和“已了解”主题，每类保留最近 50 条。两类记录都用于避免重复提醒，可以分别查看和确认清空。清空只处理所选列表，保留另一类记录和当前提醒；想再次接收某个主题的提醒时，需要确认它未保留在另一类记录中。
+## Settings
 
-插件每轮在步骤 7、13、19 等获得检查机会，短轮次通常没有提醒。没有值得提醒的事项、子 Agent 会话、界面离开、已有提醒或忽略退避期间均保持安静。同一轮最多展示一次提醒。
+Open **Settings → You Should Know**. Changes save automatically.
 
-未展开的提醒经过两次有效用户输入后收起；连续忽略会减少后续检查。主动关闭重置忽略退避，并提供 20 秒反馈；开始新轮也会收起反馈。已展示和已了解主题跨会话保存，各保留最近 50 条；成功带回主会话也记入已了解主题。
+| Setting | Default | Options |
+| --- | --- | --- |
+| Automatic observation | Enabled | Enabled, disabled |
+| Language | Follow system | Follow system, 中文, English |
+| Observer model | Follow the main session model | Independently select a model configured in Harness |
+| Observation interval | 6 model steps | 6, 12, 18, or a custom positive integer |
+| Checks per turn | Unlimited (0) | Unlimited, 1, 3, 5, or a custom non-negative integer |
+| Topic history | Up to 50 entries each in Seen and Known | Inspect, refresh, and confirm clearing each list separately |
 
-## 上下文、用量与数据
+<p align="center">
+  <img src="docs/assets/settings-en-main.jpg" alt="English settings: automatic observation, language, and observer model" width="318" />
+  <img src="docs/assets/settings-en-history.jpg" alt="English settings: observation interval, checks per turn, and topic history" width="318" />
+</p>
 
-首版固定使用主会话的完整模型请求上下文，不裁剪、不额外生成摘要。跟随模式保留系统提示、消息及工具声明前缀，以便提供方复用缓存；实际命中和费用由模型提供方决定。
+*The English menu is shown in two panels. Automatic observation is disabled in this example; see the table for factory defaults.*
 
-自动观察会增加模型调用，即使没有展示提醒也可能产生费用。每次观察最多进行两次模型生成；展开时优先复用已生成的同语言解释，缺少可用解释才额外请求。升级前保存的解释没有语言标记，仍保留原文。
+Language controls the plugin menu and prompts for future notes and explanations. “Follow system” uses the current Harness interface language: Simplified Chinese for Chinese locales, and English otherwise. Existing notes keep their original text. Selecting an observer model does not change the main session model.
 
-观察者只读取已有会话，不执行工具，不读取新文件或运行命令。观察请求和响应不写入主会话记录。状态使用 Harness 的存储域，保存提醒、解释、主题和交互字段；完整请求快照只保存在内存。
+Both topic lists are shared across sessions and help avoid repeated notes. Clearing requires confirmation and affects only the selected list; the other list and current note remain. Clearing one list therefore does not guarantee that a topic will appear again. Detecting the same topic with different wording also depends on the model, so complete deduplication is not guaranteed.
 
-插件通过宿主模型服务调用模型，不单独保存 API Key，也不新增遥测或外部反馈上传。会话内容仍会发送给选定的模型提供方。取消请求不能保证远端停止计费。
+## How it works
 
-## 开发
+1. **Capture context**: obtain a full request snapshot at the main session's model-request extension point, including the system prompt, user messages, assistant responses, existing tool calls and results, and tool definitions.
+2. **Check at intervals**: by default, steps 7, 13, 19, and so on are eligible in each turn. One model step may include several tool calls; individual tool calls do not count as steps. The step count restarts on a new turn.
+3. **Observe independently**: copy the main request and append an observer prompt as the final user message, including reminder rules and Seen and Known topics. Observation runs in the background while the main task continues.
+4. **Show notes selectively**: stay quiet when there is nothing worth surfacing. Show at most one note per turn, which you can expand, respond to, or bring into the main session.
+
+The observer reads existing context. It does not execute tools, read new files, or write observation requests and responses into the main conversation. Following the main model preserves the request prefix so the provider can attempt cache reuse; actual cache hits and pricing depend on the provider.
+
+<details>
+<summary>Check limits, skipped checks, and ignored notes</summary>
+
+- Checks count separately for each user-task turn. A started check counts even if it fails, is cancelled, or produces no note. Explanations do not count. Reloading the plugin does not reset the current turn's count.
+- One check can involve up to two model generations, so the check limit is not a limit on model calls or token usage.
+- Checks are skipped for child-agent sessions, sessions without an online display, existing notes, checks already in progress, turns that have already shown a note, or an active ignore backoff. Ending a turn does not trigger an extra check.
+- An unexpanded note closes after two effective user inputs. Starting with three consecutive ignored notes, the plugin skips 1, 2, 4, 8, and then at most 16 subsequent eligible checks. Active interaction resets the backoff. Expanded explanations stay open.
+- Dismissal offers feedback for 20 seconds; a new turn also closes that feedback. Minimizing the panel does not count as ignoring it.
+
+</details>
+
+## Usage and data
+
+**Automatic observation makes extra model calls, even when no note appears.** The plugin currently uses full conversation context without trimming or an extra summarization call. Disable observation, increase the interval, or set a per-turn limit to control extra calls. Expanding a note makes a separate model request when no usable explanation exists. Cancellation does not guarantee that remote billing stops.
+
+Requests use the model services already configured in Harness. When you select an independent observer model, full context is sent to that model's provider. The plugin does not store its own API keys, add telemetry, or upload feedback externally.
+
+Notes, explanations, topics, and required interaction state are saved in the Harness storage domain; the host manages the path and backend. Full request snapshots stay in memory only. Prompts ask the model not to repeat credentials or personal information in notes, but this does not remove such information from the full context sent to the model.
+
+## Development and contributing
+
+Report bugs or suggest improvements through [Issues](https://github.com/lolipop-1x1/dsh-you-should-know/issues), or contribute a Pull Request. Include the Harness and plugin versions, operating system, profile, reproduction steps, and expected result. Remove credentials, private conversations, and personal paths.
 
 ```sh
 npm ci
-npm run typecheck
-npm test
-npm run build
 npm run check
 ```
 
-服务端入口位于 `src/host/`，客户端位于 `src/client/`，解析与状态规则位于 `src/core/`。客户端由宿主提供 React，通过 ModuleLoader 加载；服务端使用公开扩展点，不修改 Harness 主循环。
+`check` verifies the lockfile, types, behavior tests, build, and runtime entry points. For client interaction changes, start the browser regression page:
 
-配置层的条目标识为 `dsh-you-should-know`。菜单中的步长与检查上限分别对应 `checkEvery`（默认 6）和 `maxChecksPerTurn`（默认 0）。还可在原生配置中调整 `pollIntervalMs`（默认 2000）和 `presenceLeaseMs`（默认 20000）；完整配置规格见 [设计文档](docs/设计文档.md)。
+```sh
+npm run test:browser
+```
 
-行为测试使用确定性模型回答，覆盖调度、交互、去重、退避及取消；它们不能代替真实模型的提醒质量、中文效果或用量验收。报告问题时请说明 Harness 版本、profile、复现步骤和预期结果，并去除凭证及私人会话内容。
+Open the printed URL and click “运行回归” (Run regression). The default port is 3100, configurable through `YSK_TEST_PORT`. This page uses real components with mock APIs and does not connect to actual sessions. Model quality, usage, and compatibility still need validation in the target Harness.
 
-`npm run test:browser` 提供本地客户端回归页面。打开命令显示的地址并点击“运行回归”，验证语言菜单、旧轮询竞态和带回主会话的草稿保护。该页面使用真实组件与模拟接口，不连接实际会话；默认端口为 3100，可通过 `YSK_TEST_PORT` 修改。
+| Directory | Responsibility |
+| --- | --- |
+| `src/core/` | Prompts, parsing, and state rules |
+| `src/host/` | Model calls, scheduling, and host integration |
+| `src/client/` | Floating notes, settings, and Chinese/English UI |
+| `tests/` | Behavior tests and browser regression page |
 
-贡献约定见 [CONTRIBUTING.md](CONTRIBUTING.md)。项目采用 [MIT 许可证](LICENSE)。
+See the [contribution guide](CONTRIBUTING.md) and [design document](docs/设计文档.md), both currently in Chinese, for detailed conventions, behavior, storage, and advanced configuration.
+
+## License
+
+This project is licensed under [MIT](LICENSE).
