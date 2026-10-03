@@ -30,11 +30,12 @@ export type Topics = z.infer<typeof topicsSchema>
 export type TopicList = keyof Topics
 export const stateSchema = topicsSchema.extend({
   sessions: z.array(sessionSchema).max(32),
+  observations: z.array(z.object({ id: z.string(), turn: z.number(), checks: z.number().int().nonnegative() })).optional(),
   ignored: z.number().int().nonnegative(),
   skip: z.number().int().nonnegative(),
 })
 export type State = z.infer<typeof stateSchema>
-export const emptyState = (): State => ({ seen: [], known: [], sessions: [], ignored: 0, skip: 0 })
+export const emptyState = (): State => ({ seen: [], known: [], sessions: [], observations: [], ignored: 0, skip: 0 })
 
 export function backoff(ignored: number): number {
   return ignored < 3 ? 0 : 2 ** Math.min(ignored - 3, 4)

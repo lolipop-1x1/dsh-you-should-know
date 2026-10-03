@@ -187,7 +187,7 @@ export function apply(ctx: Context): void {
           setCustom(next === 'custom')
           if (next !== 'custom') props.save(Number(next))
         }}>
-          {props.presets.map(value => <option key={value} value={value}>{value === 0 ? t('unlimited') : `${value} ${t(props.unit)}`}</option>)}
+          {props.presets.map(value => <option key={value} value={value}>{value === 0 ? t('unlimited') : `${value} ${t(value === 1 && props.unit === 'checks' ? 'check' : props.unit)}`}</option>)}
           <option value="custom">{t('custom')}</option>
         </select>
         <svg className="dshysk-select-chevron" aria-hidden="true" viewBox="0 0 16 16"><path d="m4 6 4 4 4-4" /></svg>

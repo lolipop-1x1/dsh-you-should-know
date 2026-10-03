@@ -71,6 +71,27 @@ describe('主题记录管理', () => {
 })
 
 describe('检查机会和旁路任务', () => {
+  it('会话视图容量淘汰不能重置同轮上限，重载后仍受限', async () => {
+    const f = await fixture(vi.fn(async () => 'learn: none'))
+    f.config({ maxChecksPerTurn: 1 })
+    f.engine.capture('s', 1, 7, snapshot)
+    await f.flush()
+    for (let index = 0; index < 32; index += 1) {
+      const id = `other-${index}`
+      f.engine.presenceUpdate(id, 'browser', true)
+      f.engine.capture(id, 1, 7, snapshot)
+      await f.flush()
+    }
+    expect(f.state().sessions.some(session => session.id === 's')).toBe(false)
+    f.engine.capture('s', 1, 13, snapshot)
+    await f.flush()
+    expect(f.generate).toHaveBeenCalledTimes(33)
+    const restored = await fixture(vi.fn(async () => 'learn: none'), structuredClone(f.state()))
+    restored.config({ maxChecksPerTurn: 1 })
+    restored.engine.capture('s', 1, 19, snapshot)
+    await restored.flush()
+    expect(restored.generate).not.toHaveBeenCalled()
+  })
   it.each([6, 12, 18, 8])('步长 %i 对应从步长加一开始的检查机会', async interval => {
     const f = await fixture(vi.fn(async () => 'learn: none'))
     f.config({ checkEvery: interval })
@@ -139,7 +160,7 @@ describe('检查机会和旁路任务', () => {
     expect(await f.engine.action('s', view.id, 'expand')).toBe(true)
     await f.flush()
     expect(f.generate).toHaveBeenCalledTimes(1)
-    expect(f.state().sessions[0]!.observationChecks).toBe(1)
+    expect(f.state().observations?.find(item => item.id === 's')?.checks).toBe(1)
   })
   it('没有提醒时重载也不会重置已用检查次数', async () => {
     const first = await fixture(vi.fn(async () => 'learn: none'))
@@ -154,6 +175,19 @@ describe('检查机会和旁路任务', () => {
     f.engine.capture('s', 2, 7, snapshot)
     await f.flush()
     expect(f.generate).toHaveBeenCalledTimes(1)
+  })
+  it('升级兼容旧会话计数，会话结束清理独立计数', async () => {
+    const initial = emptyState()
+    delete initial.observations
+    initial.sessions = [{ id: 's', observationTurn: 1, observationChecks: 1 }]
+    const f = await fixture(vi.fn(async () => 'learn: none'), initial)
+    f.config({ maxChecksPerTurn: 1 })
+    f.engine.capture('s', 1, 13, snapshot)
+    await f.flush()
+    expect(f.generate).not.toHaveBeenCalled()
+    f.engine.endSession('s')
+    await f.flush()
+    expect(f.state().observations).toEqual([])
   })
   it('从第七步开始检查，短轮次和没有展示界面的会话不调用模型', async () => {
     const f = await fixture()

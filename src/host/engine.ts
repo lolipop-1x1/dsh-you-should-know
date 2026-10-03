@@ -35,6 +35,9 @@ export class Engine {
   private settingsKey: string
   private closed = false
   constructor(private state: State, private ports: Ports) {
+    // 兼容旧状态；检查计数独立保存，不随最多 32 条提醒视图一起淘汰。
+    this.state = { ...state, observations: state.observations ?? state.sessions.flatMap(session =>
+      session.observationTurn !== undefined ? [{ id: session.id, turn: session.observationTurn, checks: session.observationChecks ?? 0 }] : []) }
     this.settingsKey = JSON.stringify(ports.settings())
     for (const session of state.sessions) if (session.view?.kind === 'asked') this.armFeedback(session.id, session.view)
   }
@@ -151,14 +154,17 @@ export class Engine {
       const session = this.session(id)
       if (this.closed || !settings.enabled || index <= 0 || index % settings.checkEvery !== 0
         || !this.visible(id) || session.view || session.offeredTurn === turn || this.jobs.has(id)) return
-      const checks = session.observationTurn === turn ? session.observationChecks ?? 0 : 0
+      const observation = this.state.observations?.find(item => item.id === id)
+      const checks = observation?.turn === turn ? observation.checks : 0
       if (settings.maxChecksPerTurn > 0 && checks >= settings.maxChecksPerTurn) return
       if (this.state.skip) {
         await this.commit({ ...this.state, skip: this.state.skip - 1 })
         return
       }
       // 请求发起前持久化计数；失败或取消仍可能产生用量，重启也不能重置本轮上限。
-      await this.put({ ...session, askedTurn: turn, observationTurn: turn, observationChecks: checks + 1 })
+      await this.commit(replaceSession({ ...this.state,
+        observations: [...this.state.observations!.filter(item => item.id !== id), { id, turn, checks: checks + 1 }],
+      }, { ...session, askedTurn: turn }, this.ports.now()))
       const language = this.language(id, settings)
       this.start(id, snapshot, observerPrompt(this.state.seen, this.state.known, language), settings, 'observation', async text => {
         const proposal = parseProposal(text)
@@ -284,7 +290,11 @@ export class Engine {
     this.snapshots.delete(id)
     this.presence.delete(id)
     void this.enqueue(async () => {
-      if (!this.closed && this.session(id).view) await this.put({ ...this.session(id), view: undefined })
+      if (this.closed) return
+      const session = this.session(id)
+      const next = { ...this.state, observations: this.state.observations!.filter(item => item.id !== id) }
+      if (session.view) await this.commit(replaceSession(next, { ...session, view: undefined }, this.ports.now()))
+      else if (next.observations.length !== this.state.observations!.length) await this.commit(next)
     })
   }
 
