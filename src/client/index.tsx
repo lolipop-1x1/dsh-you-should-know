@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
@@ -166,11 +166,14 @@ export function apply(ctx: Context): void {
   const SettingsPage = () => {
     const { form, snapshot, language } = useSettings()
     const t = (key: CopyKey) => copy(language, key)
+    const id = useId()
     const [catalog, setCatalog] = useState<ModelCatalog>()
+    const [catalogLoading, setCatalogLoading] = useState(true)
     const [message, setMessage] = useState<CopyKey | ''>('')
     const [busy, setBusy] = useState(false)
     const mounted = useRef(true)
     const load = async () => {
+      setCatalogLoading(true)
       try {
         const result = await ctx.remote.session.modelCatalog()
         if (!mounted.current) return
@@ -178,6 +181,7 @@ export function apply(ctx: Context): void {
         setCatalog(result.value)
         setMessage(result.value.failures.length ? 'catalogError' : '')
       } catch { if (mounted.current) setMessage('catalogError') }
+      finally { if (mounted.current) setCatalogLoading(false) }
     }
     useEffect(() => { mounted.current = true; void load(); return () => { mounted.current = false } }, [])
     const save = async (operations: Parameters<typeof form.mutate>[0]) => {
@@ -186,36 +190,73 @@ export function apply(ctx: Context): void {
       catch { if (mounted.current) setMessage('settingsError') }
       finally { if (mounted.current) setBusy(false) }
     }
-    if (snapshot.status === 'loading') return <p>{t('loading')}</p>
-    if (!snapshot.value || !snapshot.writable) return <p>{t('unavailable')}</p>
+    if (snapshot.status === 'loading') return <p className="dshysk-settings-message" role="status">{t('loading')}</p>
+    if (!snapshot.value || !snapshot.writable) return <p className="dshysk-settings-message" role="status">{t('unavailable')}</p>
     const value = snapshot.value
     const selected = value.modelMode === 'follow' ? 'follow' : JSON.stringify([value.provider, value.model])
     const found = catalog?.groups.some(group => group.id === value.provider && group.models.some(model => model.id === value.model))
-    return <div className="dshysk-settings">
-      <h3>You Should Know</h3>
-      <p>{t('usage')}</p>
-      <label><input type="checkbox" checked={value.enabled} disabled={busy} onChange={event => { void save([{ op: 'set', path: ['enabled'], value: event.target.checked }]) }} /> {t('enabled')}</label>
-      <label>{t('language')}<select value={value.language ?? 'auto'} disabled={busy} onChange={event => {
-        void save([{ op: 'set', path: ['language'], value: event.target.value }])
-      }}>
-        <option value="auto">{t('system')}</option>
-        <option value="zh-CN">中文</option>
-        <option value="en-US">English</option>
-      </select></label>
-      <label>{t('model')}<select value={selected} disabled={busy} onChange={event => {
-        if (event.target.value === 'follow') void save([{ op: 'set', path: ['modelMode'], value: 'follow' }])
-        else {
-          const [provider, model] = JSON.parse(event.target.value) as [string, string]
-          void save([{ op: 'set', path: ['provider'], value: provider }, { op: 'set', path: ['model'], value: model }, { op: 'set', path: ['modelMode'], value: 'custom' }])
-        }
-      }}>
-        <option value="follow">{t('follow')}</option>
-        {value.modelMode === 'custom' && !found && <option value={selected}>{value.provider} / {value.model}</option>}
-        {catalog?.groups.map(group => <optgroup key={group.id} label={group.name}>{group.models.map(model => <option key={model.id} value={JSON.stringify([group.id, model.id])}>{model.name}</option>)}</optgroup>)}
-      </select></label>
-      <button type="button" onClick={() => { void load() }}>{t('refresh')}</button>
-      {message && <p role="status">{t(message)}</p>}
-    </div>
+    return <section className="dshysk-settings" aria-labelledby={`${id}-title`}>
+      <header className="dshysk-settings-header">
+        <h3 id={`${id}-title`}>You Should Know</h3>
+        <p>{t('settingsIntro')}</p>
+      </header>
+      <div className="dshysk-settings-rows">
+        <label className="dshysk-setting-row dshysk-setting-toggle">
+          <span className="dshysk-setting-copy">
+            <span className="dshysk-setting-title">{t('enabled')}</span>
+            <span className="dshysk-setting-description" id={`${id}-enabled-description`}>{t('observationHint')}</span>
+          </span>
+          <input className="dshysk-switch" type="checkbox" role="switch" aria-label={t('enabled')} aria-describedby={`${id}-enabled-description`}
+            checked={value.enabled} disabled={busy} onChange={event => { void save([{ op: 'set', path: ['enabled'], value: event.target.checked }]) }} />
+        </label>
+        <div className="dshysk-setting-row">
+          <div className="dshysk-setting-copy">
+            <label className="dshysk-setting-title" htmlFor={`${id}-language`}>{t('language')}</label>
+            <p className="dshysk-setting-description" id={`${id}-language-description`}>{t('languageHint')}</p>
+          </div>
+          <div className="dshysk-select-wrap">
+            <select id={`${id}-language`} aria-describedby={`${id}-language-description`} value={value.language ?? 'auto'} disabled={busy} onChange={event => {
+              void save([{ op: 'set', path: ['language'], value: event.target.value }])
+            }}>
+              <option value="auto">{t('system')}</option>
+              <option value="zh-CN">中文</option>
+              <option value="en-US">English</option>
+            </select>
+            <svg className="dshysk-select-chevron" aria-hidden="true" viewBox="0 0 16 16"><path d="m4 6 4 4 4-4" /></svg>
+          </div>
+        </div>
+        <div className="dshysk-setting-row">
+          <div className="dshysk-setting-copy">
+            <label className="dshysk-setting-title" htmlFor={`${id}-model`}>{t('model')}</label>
+            <p className="dshysk-setting-description" id={`${id}-model-description`}>{t('modelHint')}</p>
+          </div>
+          <div className="dshysk-model-controls">
+            <div className="dshysk-select-wrap">
+              <select id={`${id}-model`} aria-describedby={`${id}-model-description`} value={selected} disabled={busy} onChange={event => {
+                if (event.target.value === 'follow') void save([{ op: 'set', path: ['modelMode'], value: 'follow' }])
+                else {
+                  const [provider, model] = JSON.parse(event.target.value) as [string, string]
+                  void save([{ op: 'set', path: ['provider'], value: provider }, { op: 'set', path: ['model'], value: model }, { op: 'set', path: ['modelMode'], value: 'custom' }])
+                }
+              }}>
+                <option value="follow">{t('follow')}</option>
+                {value.modelMode === 'custom' && !found && <option value={selected}>{value.provider} / {value.model}</option>}
+                {catalog?.groups.map(group => <optgroup key={group.id} label={group.name}>{group.models.map(model => <option key={model.id} value={JSON.stringify([group.id, model.id])}>{model.name}</option>)}</optgroup>)}
+              </select>
+              <svg className="dshysk-select-chevron" aria-hidden="true" viewBox="0 0 16 16"><path d="m4 6 4 4 4-4" /></svg>
+            </div>
+            <button className="dshysk-refresh" type="button" disabled={catalogLoading} aria-label={t(catalogLoading ? 'refreshing' : 'refresh')}
+              title={t(catalogLoading ? 'refreshing' : 'refresh')} onClick={() => { void load() }}>
+              <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M15.5 7A6 6 0 0 0 5 5.5L3 8m0-4v4h4m-2.5 5A6 6 0 0 0 15 14.5l2-2.5m0 4v-4h-4" /></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+      <footer className="dshysk-settings-footer">
+        <p className="dshysk-settings-usage">{t('usage')}</p>
+        <p className="dshysk-settings-status" role="status">{t(message || 'autosave')}</p>
+      </footer>
+    </section>
   }
   ctx.effect(() => {
     const element = document.createElement('style')

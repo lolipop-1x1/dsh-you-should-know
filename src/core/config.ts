@@ -10,7 +10,7 @@ export interface Settings {
   presenceLeaseMs: number
 }
 export const defaults: Settings = {
-  enabled: false, language: 'auto', modelMode: 'follow', provider: '', model: '', checkEvery: 6,
+  enabled: true, language: 'auto', modelMode: 'follow', provider: '', model: '', checkEvery: 6,
   pollIntervalMs: 2000, presenceLeaseMs: 20_000,
 }
 

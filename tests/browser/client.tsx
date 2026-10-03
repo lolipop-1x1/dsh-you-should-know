@@ -146,10 +146,14 @@ const tests: [string, (f: Awaited<ReturnType<typeof fixture>>) => Promise<void>]
     assert(!f.requests.some(request => request.action === 'chat-confirm'), '卸载后仍确认带回')
   }],
 ]
+let preview: Awaited<ReturnType<typeof fixture>> | undefined
 document.querySelector<HTMLButtonElement>('#run')!.onclick = async () => {
+  preview?.dispose()
+  preview = undefined
   const button = document.querySelector<HTMLButtonElement>('#run')!
   const output = document.querySelector('#results')!
   button.disabled = true
+  output.removeAttribute('hidden')
   output.textContent = ''
   let passed = 0
   for (const [name, run] of tests) {
@@ -161,4 +165,17 @@ document.querySelector<HTMLButtonElement>('#run')!.onclick = async () => {
   output.textContent += `${passed}/${tests.length} 通过`
   output.setAttribute('data-result', passed === tests.length ? 'passed' : 'failed')
   button.disabled = false
+}
+
+// 演示真实组件，配置只保存于当前页面，便于检查主题与窄屏布局。
+document.querySelector<HTMLButtonElement>('#preview')!.onclick = async () => {
+  preview?.dispose()
+  preview = await fixture()
+  document.querySelector('#results')!.setAttribute('hidden', '')
+}
+document.querySelector<HTMLSelectElement>('#theme')!.onchange = event => {
+  document.documentElement.dataset.theme = (event.target as HTMLSelectElement).value
+}
+document.querySelector<HTMLSelectElement>('#width')!.onchange = event => {
+  document.querySelector<HTMLElement>('#settings')!.style.maxWidth = (event.target as HTMLSelectElement).value
 }

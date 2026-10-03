@@ -36,7 +36,7 @@ dsh plugin --profile web add -w /absolute/path/dsh-you-should-know-0.1.0.tgz
 
 ## 使用
 
-打开 **设置 → You Should Know**，开启“自动观察”。默认关闭自动观察，观察模型默认跟随主会话。
+自动观察默认开启，观察模型默认跟随主会话。可在 **设置 → You Should Know** 中关闭“自动观察”。已保存的开关设置会继续保留。
 
 菜单支持独立选择 Harness 已配置的模型。选择观察模型不会改变主会话的模型；切回“跟随主会话模型”后，后续观察使用主会话当时的模型。
 

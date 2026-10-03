@@ -11,6 +11,11 @@ const zh = {
   discuss: '以下是旁路观察者提出的事项。请结合当前任务讨论其含义与影响。',
   collapse: '收起提醒', open: '展开提醒',
   language: '语言', system: '跟随系统',
+  settingsIntro: '在任务进行时，提醒值得了解的事实与方案取舍。',
+  observationHint: '后台观察当前会话，有值得提醒的内容时再显示。',
+  languageHint: '用于菜单、后续提醒与解释。',
+  modelHint: '用于观察和解释，默认跟随主会话当前模型。',
+  autosave: '更改自动保存', refreshing: '正在刷新模型目录…',
 } as const
 const en: Record<keyof typeof zh, string> = {
   learn: 'Learn more', knew: 'Knew this already', dismiss: 'Dismiss', understood: 'Understood', chat: 'Chat in main session',
@@ -25,6 +30,11 @@ const en: Record<keyof typeof zh, string> = {
   discuss: 'Here is a note from a side observer. Please discuss its meaning and impact on the current task.',
   collapse: 'Minimize note', open: 'Open note',
   language: 'Language', system: 'Follow system',
+  settingsIntro: 'Surface important facts and trade-offs while a task is running.',
+  observationHint: 'Observe the current session and show a note when it matters.',
+  languageHint: 'Applies to this menu and future notes and explanations.',
+  modelHint: 'Used for observations and explanations. Follows the current session model by default.',
+  autosave: 'Changes save automatically', refreshing: 'Refreshing model catalog…',
 }
 export type CopyKey = keyof typeof zh
 export const copy = (locale: string, key: CopyKey): string => /^zh(?:-|$)/iu.test(locale) ? zh[key] : en[key]
