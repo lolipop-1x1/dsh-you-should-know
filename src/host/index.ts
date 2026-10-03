@@ -1,13 +1,13 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-client-connection'
-import { isAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 import { defineDomain } from '@deepseek-ai/dsh-storage-domain'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { z } from 'zod'
 import { emptyState, stateSchema } from '../core/state.js'
 import { Engine } from './engine.js'
 import { generate } from './generate.js'
+import { isMainRequest } from './request.js'
 import type { Config as LiveConfig } from './config.js'
 export { Config } from './config.js'
 
@@ -25,10 +25,16 @@ const requestSchema = z.object({
   action: z.enum(['expand', 'known', 'dismiss', 'helpful', 'irrelevant', 'unclear', 'chat', 'chat-confirm']).optional(),
 }).strict()
 
+class RequestError extends Error {
+  constructor(message: string, readonly status = 400) { super(message) }
+}
+
 async function body(request: Request): Promise<unknown> {
-  if (!request.headers.get('content-type')?.startsWith('application/json')) throw new Error('请使用 JSON 请求。')
+  if (request.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() !== 'application/json') {
+    throw new RequestError('请使用 JSON 请求。', 415)
+  }
   const reader = request.body?.getReader()
-  if (!reader) throw new Error('请求缺少内容。')
+  if (!reader) throw new RequestError('请求缺少内容。')
   let text = ''
   let size = 0
   const decoder = new TextDecoder('utf-8', { fatal: true })
@@ -37,7 +43,7 @@ async function body(request: Request): Promise<unknown> {
       const { value, done } = await reader.read()
       if (done) break
       size += value.byteLength
-      if (size > 8192) { await reader.cancel(); throw new Error('请求过大。') }
+      if (size > 8192) { await reader.cancel(); throw new RequestError('请求过大。', 413) }
       text += decoder.decode(value, { stream: true })
     }
     return JSON.parse(text + decoder.decode())
@@ -50,34 +56,37 @@ export async function apply(ctx: Context, config: LiveConfig): Promise<void> {
   const domain = await ctx.storageDomain.open(spec)
   const engine = new Engine(domain.global.get(), {
     settings: () => config.get(), save: state => domain.global.set(state), now: Date.now,
-    generate: (snapshot, prompt, settings, signal) => generate(ctx, snapshot, prompt, settings, signal),
+    generate: (snapshot, prompt, settings, signal) => ctx.agents.withoutInitiator(() => generate(ctx, snapshot, prompt, settings, signal)),
     error: () => console.warn('[You Should Know] 观察或状态保存失败，请检查模型与存储配置。'),
   })
   ctx.effect(() => async () => { await engine.dispose(); await domain.close() })
   const frames = new Map<string, { turn: number; step: number }>()
-  const inputs = new Map<string, number>()
-  const primary = (id: string) => ctx.agents.get(SessionId(id))?.session.header.origin !== 'subagent'
   ctx.on('session/event', (session, event) => {
     const id = session.id
     if (session.header.origin === 'subagent') return
-    if (event.type === 'user/message' && event.data.source.kind === 'user') inputs.set(id, (inputs.get(id) ?? 0) + 1)
+    // LOOP 在步骤开始后提交用户消息，按消息事件计数，避免把上轮输入算到新提醒上。
+    if (event.type === 'user/message' && event.data.source.kind === 'user') {
+      engine.beginTurn(id, frames.get(id)?.turn ?? 0, 1)
+    }
     if (event.type === 'step/start') {
       frames.set(id, event.data)
       if (event.data.step === 1) {
-        engine.beginTurn(id, event.data.turn, inputs.get(id) ?? 0)
-        inputs.delete(id)
+        engine.beginTurn(id, event.data.turn, 0)
       }
     }
   })
   ctx.on('llm/stream', (options, next) => {
     const id = options.sessionId
     const frame = id ? frames.get(id) : undefined
-    if (id && frame && isAgentLoopRequest(options) && primary(id)) engine.capture(id, frame.turn, frame.step, options)
+    const session = id ? ctx.agents.get(SessionId(id))?.session : undefined
+    if (id && frame && session && session.header.origin !== 'subagent'
+      && isMainRequest(options, session, ctx.agents.currentInitiator()?.id)) {
+      engine.capture(id, frame.turn, frame.step, options)
+    }
     return next()
   })
   ctx.on('session/disposed', session => {
     frames.delete(session.id)
-    inputs.delete(session.id)
     engine.endSession(session.id)
   })
   ctx.inject(['connection'], child => {
@@ -95,6 +104,7 @@ export async function apply(ctx: Context, config: LiveConfig): Promise<void> {
           }
           return Response.json({ ...await engine.read(input.sessionId), accepted }, { headers: { 'cache-control': 'no-store' } })
         } catch (error) {
+          if (error instanceof RequestError) return Response.json({ error: error.message }, { status: error.status })
           if (error instanceof z.ZodError || error instanceof SyntaxError) return Response.json({ error: '请求字段无效。' }, { status: 400 })
           return Response.json({ error: '无法处理提醒请求。' }, { status: 500 })
         }

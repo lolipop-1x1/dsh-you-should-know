@@ -1,16 +1,16 @@
 import { describe, it, expect, vi, onTestFinished } from 'vitest'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { defaults, type Settings } from '../src/core/config.js'
-import { backoff, emptyState, replaceSession, type State } from '../src/core/state.js'
+import { addTopic, backoff, emptyState, replaceSession, type State } from '../src/core/state.js'
 import { parseExplanation, parseProposal } from '../src/core/parser.js'
 import { Engine } from '../src/host/engine.js'
 
 const snapshot: GenerateOptions = { provider: 'main', model: 'main-model', messages: [{ role: 'user', content: [{ type: 'text', text: '提高性能' }] }] }
 const response = 'learn: The cache can delay updates by five minutes.\ntag: Heads up\nexplain: Cached values remain visible until the next refresh.'
-async function fixture(generate = vi.fn(async () => response)) {
+async function fixture(generate = vi.fn(async () => response), initial = emptyState()) {
   let now = 1000
   let settings: Settings = { ...defaults, enabled: true }
-  let stored = emptyState()
+  let stored = initial
   const engine = new Engine(stored, {
     settings: () => settings, save: async state => { stored = structuredClone(state) },
     now: () => now, generate, error: vi.fn(),
@@ -100,6 +100,49 @@ describe('检查机会和旁路任务', () => {
 })
 
 describe('提醒交互', () => {
+  it.each(['helpful', 'irrelevant', 'unclear'] as const)('未展开关闭后的 %s 反馈清除提醒、重置退避', async action => {
+    const f = await fixture(undefined, { ...emptyState(), ignored: 5 })
+    const view = await f.offer()
+    await f.engine.action('s', view.id, 'dismiss')
+    expect(await f.engine.action('s', view.id, action)).toBe(true)
+    expect((await f.engine.read('s')).view).toBeUndefined()
+    expect(f.state().ignored).toBe(0)
+    expect(f.state().skip).toBe(0)
+    expect(f.state().known).toEqual(action === 'helpful' ? [view.line] : [])
+  })
+  it('展开后的反馈不允许不相关，20秒边界准时收起', async () => {
+    const f = await fixture()
+    const view = await f.offer()
+    await f.engine.action('s', view.id, 'expand')
+    await f.engine.action('s', view.id, 'dismiss')
+    expect(await f.engine.action('s', view.id, 'irrelevant')).toBe(false)
+    f.time(20_999)
+    expect((await f.engine.read('s')).view?.kind).toBe('asked')
+    f.time(21_000)
+    expect((await f.engine.read('s')).view).toBeUndefined()
+  })
+  it('持久状态恢复后仍能展开已有解释，无需保留原始会话快照', async () => {
+    const first = await fixture()
+    const view = await first.offer()
+    const restored = await fixture(undefined, first.state())
+    expect((await restored.engine.read('s')).view?.id).toBe(view.id)
+    expect(await restored.engine.action('s', view.id, 'expand')).toBe(true)
+    expect(restored.generate).not.toHaveBeenCalled()
+    expect((await restored.engine.read('s')).view?.kind).toBe('explained')
+  })
+  it('解释请求失败可重试', async () => {
+    const model = vi.fn().mockResolvedValueOnce('learn: A retryable constraint.')
+      .mockRejectedValueOnce(new Error('model unavailable')).mockResolvedValueOnce('A working explanation.')
+    const f = await fixture(model)
+    const view = await f.offer()
+    await f.engine.action('s', view.id, 'expand')
+    await f.flush()
+    expect((await f.engine.read('s')).view?.kind).toBe('failed')
+    await f.engine.action('s', view.id, 'expand')
+    await f.flush()
+    expect((await f.engine.read('s')).view?.kind).toBe('explained')
+    expect(model).toHaveBeenCalledTimes(3)
+  })
   it('已有解释直接展开，不增加模型调用；准备带回失败不会提前关闭提醒', async () => {
     const f = await fixture()
     const view = await f.offer()
@@ -122,13 +165,14 @@ describe('提醒交互', () => {
     expect((await f.engine.read('s')).view?.id).toBe(view.id)
   })
   it('关闭先询问反馈，二十秒超时不改忽略计数', async () => {
-    const f = await fixture()
+    const f = await fixture(undefined, { ...emptyState(), ignored: 5 })
     const view = await f.offer()
     await f.engine.action('s', view.id, 'dismiss')
     expect((await f.engine.read('s')).view?.kind).toBe('asked')
     f.time(21_001)
     expect((await f.engine.read('s')).view).toBeUndefined()
-    expect(f.state().ignored).toBe(0)
+    expect(f.state().ignored).toBe(5)
+    expect(f.state().skip).toBe(0)
   })
   it('未展开提醒越过两次用户输入才忽略，第三次连续忽略后跳一次检查', async () => {
     const generation = vi.fn(async () => `learn: Important fact ${generation.mock.calls.length}.`)
@@ -163,6 +207,23 @@ describe('提醒交互', () => {
 })
 
 describe('输出与状态容量', () => {
+  it('第51个主题淘汰最早项，展示主题去重忽略大小写和末尾句点', () => {
+    const topics = Array.from({ length: 50 }, (_, index) => `topic ${index}`)
+    expect(addTopic(topics, 'new topic')).toEqual([...topics.slice(1), 'new topic'])
+    expect(addTopic(['Cache delay.'], 'CACHE DELAY', true)).toEqual(['Cache delay.'])
+    expect(addTopic(['Known topic'], 'KNOWN TOPIC')).toEqual(['Known topic'])
+    expect(addTopic(['Known topic.'], 'Known topic')).toEqual(['Known topic.', 'Known topic'])
+  })
+  it('三天边界只影响容量优先级，不主动使开放提醒过期', async () => {
+    const f = await fixture()
+    const view = await f.offer()
+    f.time(259_201_000)
+    expect((await f.engine.read('s')).view?.id).toBe(view.id)
+    let state = f.state()
+    for (let index = 0; index < 32; index += 1) state = replaceSession(state, { id: `new${index}` }, 259_201_000)
+    expect(state.sessions).toHaveLength(32)
+    expect(state.sessions.some(session => session.id === 's')).toBe(false)
+  })
   it('接受缺省分类或解释，none 不被后续文字改成提醒，拒绝超长提醒', () => {
     expect(parseProposal('learn: none\nunexpected')).toEqual({ kind: 'none' })
     expect(parseProposal('learn: "A meaningful constraint".')).toEqual({ kind: 'line', line: 'A meaningful constraint.', tag: 'You should know' })
@@ -184,5 +245,82 @@ describe('输出与状态容量', () => {
     expect(state.sessions).toHaveLength(32)
     expect(state.sessions.some(session => session.id === 'protected')).toBe(true)
     expect(state.sessions.some(session => session.id === 's0')).toBe(false)
+  })
+})
+
+describe('并发、租期和恢复', () => {
+  it('存储写入失败会报告错误，后续操作可以继续且不产生未处理拒绝', async () => {
+    const error = vi.fn()
+    const save = vi.fn().mockRejectedValueOnce(new Error('storage unavailable')).mockResolvedValue(undefined)
+    const engine = new Engine(emptyState(), { settings: () => ({ ...defaults, enabled: true }), save,
+      generate: vi.fn(async () => response), now: () => 1000, error,
+    })
+    onTestFinished(() => engine.dispose())
+    engine.beginTurn('s', 1, 1)
+    await engine.settled()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(error).toHaveBeenCalledTimes(1)
+    engine.beginTurn('s', 2, 1)
+    await engine.settled()
+    expect(save).toHaveBeenCalledTimes(2)
+    expect(await engine.read('s')).toMatchObject({ enabled: true })
+  })
+  it('新轮次取消旧检查，不遵循 abort 的迟到结果不能展示', async () => {
+    let resolve!: (text: string) => void
+    const f = await fixture(vi.fn(() => new Promise<string>(done => { resolve = done })))
+    f.engine.capture('s', 1, 7, snapshot)
+    await f.flush()
+    f.engine.beginTurn('s', 2, 1)
+    resolve(response)
+    await f.flush()
+    expect(f.state().seen).toEqual([])
+    expect((await f.engine.read('s')).view).toBeUndefined()
+  })
+  it('两会话的观察独立，关闭一个界面不取消另一个', async () => {
+    const resolvers: ((text: string) => void)[] = []
+    const f = await fixture(vi.fn(() => new Promise<string>(resolve => { resolvers.push(resolve) })))
+    f.engine.presenceUpdate('other', 'browser', true)
+    f.engine.capture('s', 1, 7, snapshot)
+    f.engine.capture('other', 1, 7, snapshot)
+    await f.flush()
+    expect(resolvers).toHaveLength(2)
+    f.engine.presenceUpdate('s', 'browser', false)
+    resolvers[0]!(response)
+    resolvers[1]!('learn: Another session fact.')
+    await f.flush()
+    expect((await f.engine.read('s')).view).toBeUndefined()
+    expect((await f.engine.read('other')).view?.line).toBe('Another session fact.')
+  })
+  it('多前端租期独立，最后一个租期过期后不接受观察结果', async () => {
+    let resolve!: (text: string) => void
+    const f = await fixture(vi.fn(() => new Promise<string>(done => { resolve = done })))
+    f.time(15_000)
+    f.engine.presenceUpdate('s', 'second', true)
+    f.time(21_000)
+    f.engine.capture('s', 1, 7, snapshot)
+    await f.flush()
+    expect(f.generate).toHaveBeenCalledTimes(1)
+    f.time(35_000)
+    resolve(response)
+    await f.flush()
+    expect(f.state().seen).toEqual([])
+  })
+  it('恢复中的解释标记为失败，重新开启后可以获得新的检查机会', async () => {
+    const initial = emptyState()
+    initial.sessions = [{ id: 's', view: { id: 'v', kind: 'explaining', line: 'Constraint.',
+      tag: 'Heads up', shownAt: 1000, promptsSurvived: 0, expanded: true } }]
+    const f = await fixture(undefined, initial)
+    expect((await f.engine.read('s')).view?.kind).toBe('failed')
+    expect(await f.engine.action('s', 'v', 'expand')).toBe(false)
+    await f.engine.action('s', 'v', 'dismiss')
+    await f.engine.action('s', 'v', 'unclear')
+    f.config({ enabled: false })
+    f.engine.capture('s', 2, 7, snapshot)
+    await f.flush()
+    expect(f.generate).not.toHaveBeenCalled()
+    f.config({ enabled: true })
+    f.engine.capture('s', 3, 7, snapshot)
+    await f.flush()
+    expect((await f.engine.read('s')).view?.kind).toBe('offer')
   })
 })

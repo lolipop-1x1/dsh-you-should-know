@@ -18,7 +18,7 @@ export function parseProposal(text: string): Proposal {
   const explain = lines.findIndex((line, index) => index > start && /^explain:/iu.test(line))
   const header = explain < 0 ? lines : lines.slice(0, explain)
   let line = header[start]!.replace(/^learn\s*:\s*/iu, '')
-  if (!unquote(line) || /^none\s*(?:[.!?()[\]:;,-]|$)/iu.test(unquote(line))) return { kind: 'none' }
+  if (/^none(?:[.!?]|$)/iu.test(unquote(line))) return { kind: 'none' }
   const tagLine = header.find(value => /^tag\s*[:—–-]/iu.test(value))
   for (const continuation of header.slice(start + 1)) {
     if (!continuation || /^(learn|tag)\s*:/iu.test(continuation) || /\?["'”’`]?$/u.test(line)) break
@@ -27,8 +27,8 @@ export function parseProposal(text: string): Proposal {
   const inlineTag = /[.\s—–-]*tag\s*:\s*(heads[\s-]*up|you should know)\W*$/iu.exec(line)
   if (inlineTag) line = line.slice(0, inlineTag.index)
   line = unquote(line)
-  if (!line || /^none\s*(?:[.!?()[\]:;,-]|$)/iu.test(line)) return { kind: 'none' }
-  if (!/[.!?…]["'”’`)\]]*$/u.test(line)) line += '.'
+  if (!line || /^none(?:[.!?]|$)/iu.test(line)) return { kind: 'none' }
+  if (!/[.!?…。！？]["'”’`)\]]*$/u.test(line)) line += '.'
   if (line.length > 240) return { kind: 'invalid' }
   const tag = /heads[\s-]*up/iu.test(tagLine ?? inlineTag?.[1] ?? '') ? 'Heads up' : 'You should know'
   const explanation = explain < 0 ? undefined
