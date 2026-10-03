@@ -14,6 +14,7 @@ import { parseExplanation } from '../core/parser.js'
 import type { Settings } from '../core/config.js'
 import { copy, type CopyKey } from './i18n.js'
 import { createApi, type ResponseState } from './api.js'
+import { styles } from './styles.js'
 
 export const inject = ['slots', 'locale', 'configForms', 'remote', 'remote.session']
 
@@ -34,6 +35,8 @@ export function apply(ctx: Context): void {
     const [state, setState] = useState<ResponseState>()
     const [message, setMessage] = useState('')
     const [busy, setBusy] = useState(false)
+    const [collapsedId, setCollapsedId] = useState<string>()
+    const focusOnReopen = useRef(false)
     const revision = useRef(0)
     const alive = useRef(true)
     const operations = useRef(new Set<AbortController>())
@@ -43,6 +46,7 @@ export function apply(ctx: Context): void {
       setState(undefined)
       setMessage('')
       setBusy(false)
+      setCollapsedId(undefined)
       const clientId = crypto.randomUUID()
       const controller = new AbortController()
       let timer: ReturnType<typeof setTimeout> | undefined
@@ -111,28 +115,44 @@ export function apply(ctx: Context): void {
     }
     const view = state?.enabled ? state.view : undefined
     if (!view) return null
-    const button = (key: CopyKey, action: string) => <button type="button" disabled={busy} onClick={() => { void act(action) }}>{t(key)}</button>
-    return <aside className="dshysk-card" aria-label="You Should Know">
-      <div className="dshysk-label">✦ {t(view.tag === 'Heads up' ? 'heads' : 'know')}</div>
-      <p aria-live="polite">{view.line}</p>
-      {view.kind === 'explaining' && <p role="status">{t('waiting')}</p>}
-      {view.kind === 'failed' && <p role="status">{t('failed')}</p>}
-      {view.kind === 'explained' && <div className="dshysk-explanation">{parseExplanation(view.explanation ?? '').map((block, index) =>
-        <section key={index}>
-          {block.title && <h4>{block.title}</h4>}
-          {block.lead && <p>{block.lead}</p>}
-          {block.sketch.length > 0 && <pre>{block.sketch.join('\n')}</pre>}
-          {block.caption && <p>{block.caption}</p>}
-        </section>)}</div>}
-      <div className="dshysk-actions">
-        {view.kind === 'offer' && <>{button('learn', 'expand')}{button('knew', 'known')}{button('dismiss', 'dismiss')}</>}
-        {view.kind === 'explained' && <>{button('understood', 'known')}{button('chat', 'chat')}{button('dismiss', 'dismiss')}</>}
-        {view.kind === 'failed' && <>{button('retry', 'expand')}{button('dismiss', 'dismiss')}</>}
-        {view.kind === 'explaining' && button('dismiss', 'dismiss')}
-        {view.kind === 'asked' && <><span>{t('feedback')}</span>{button('helpful', 'helpful')}{!view.expanded && button('irrelevant', 'irrelevant')}{button('unclear', 'unclear')}</>}
-      </div>
-      {message && <p role="status">{message}</p>}
-    </aside>
+    const label = t(view.tag === 'Heads up' ? 'heads' : 'know')
+    const button = (key: CopyKey, action: string, primary = false) => <button className={primary ? 'dshysk-primary' : undefined} type="button" disabled={busy} onClick={() => { void act(action) }}>{t(key)}</button>
+    return <div className="dshysk-anchor">
+      {collapsedId === view.id ? <button className="dshysk-trigger" type="button" autoFocus aria-label={t('open')} aria-expanded="false" onClick={() => { focusOnReopen.current = true; setCollapsedId(undefined) }}>
+        <span className="dshysk-mark" aria-hidden="true">i</span>{label}<span aria-hidden="true">↑</span>
+      </button> : <aside className="dshysk-card" aria-label="You Should Know" onKeyDown={event => {
+        if (event.key === 'Escape') { event.stopPropagation(); setCollapsedId(view.id) }
+      }}>
+        <div className="dshysk-header">
+          <div className="dshysk-label"><span className="dshysk-mark" aria-hidden="true">i</span>{label}</div>
+          <button className="dshysk-collapse" type="button" aria-label={t('collapse')} title={t('collapse')} ref={element => {
+            if (element && focusOnReopen.current) { focusOnReopen.current = false; element.focus() }
+          }} onClick={() => { setCollapsedId(view.id) }}>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
+          </button>
+        </div>
+        <div className="dshysk-content">
+          <p className="dshysk-summary" aria-live="polite">{view.line}</p>
+          {view.kind === 'explaining' && <p role="status">{t('waiting')}</p>}
+          {view.kind === 'failed' && <p role="status">{t('failed')}</p>}
+          {view.kind === 'explained' && <div className="dshysk-explanation">{parseExplanation(view.explanation ?? '').map((block, index) =>
+            <section key={index}>
+              {block.title && <h4>{block.title}</h4>}
+              {block.lead && <p>{block.lead}</p>}
+              {block.sketch.length > 0 && <pre>{block.sketch.join('\n')}</pre>}
+              {block.caption && <p>{block.caption}</p>}
+            </section>)}</div>}
+        </div>
+        <div className="dshysk-actions">
+          {view.kind === 'offer' && <>{button('learn', 'expand', true)}{button('knew', 'known')}{button('dismiss', 'dismiss')}</>}
+          {view.kind === 'explained' && <>{button('understood', 'known', true)}{button('chat', 'chat')}{button('dismiss', 'dismiss')}</>}
+          {view.kind === 'failed' && <>{button('retry', 'expand', true)}{button('dismiss', 'dismiss')}</>}
+          {view.kind === 'explaining' && button('dismiss', 'dismiss')}
+          {view.kind === 'asked' && <><span>{t('feedback')}</span>{button('helpful', 'helpful')}{!view.expanded && button('irrelevant', 'irrelevant')}{button('unclear', 'unclear')}</>}
+        </div>
+        {message && <p className="dshysk-status" role="status">{message}</p>}
+      </aside>}
+    </div>
   }
 
   const SettingsPage = () => {
@@ -185,7 +205,7 @@ export function apply(ctx: Context): void {
   }
   ctx.effect(() => {
     const element = document.createElement('style')
-    element.textContent = `.dshysk-card{padding:12px 14px;border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-radius:10px;margin:8px 0;font:inherit}.dshysk-card p{margin:8px 0;white-space:pre-wrap;overflow-wrap:anywhere}.dshysk-label{font-size:12px;opacity:.7}.dshysk-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.dshysk-actions button{font:inherit;font-size:12px;background:transparent;color:inherit;border:0;padding:4px;cursor:pointer;text-decoration:underline;text-underline-offset:3px}.dshysk-actions button:disabled{opacity:.5;cursor:wait}.dshysk-explanation{max-height:320px;overflow:auto}.dshysk-explanation pre{overflow:auto;font-size:12px}.dshysk-settings{display:grid;gap:14px}.dshysk-settings label{display:flex;gap:10px;align-items:center}.dshysk-settings select{font:inherit;max-width:100%}`
+    element.textContent = styles
     document.head.append(element)
     return () => element.remove()
   })
