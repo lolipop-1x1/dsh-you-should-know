@@ -5,6 +5,7 @@ import { defaults, type Settings } from '../core/config.js'
 export type Config = Volatile<Settings>
 export const Config = Schema.object({
   enabled: Schema.boolean().default(defaults.enabled).description('自动观察'),
+  language: Schema.union(['auto', 'zh-CN', 'en-US']).default(defaults.language).description('语言：跟随系统、中文或 English'),
   modelMode: Schema.union(['follow', 'custom']).default('follow').description('观察模型：跟随主会话或独立选择'),
   provider: Schema.string().default('').description('独立观察模型的提供方'),
   model: Schema.string().default('').description('独立观察模型的模型标识'),

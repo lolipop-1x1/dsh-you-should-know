@@ -11,7 +11,7 @@ import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ClientTransportHooks } from '@deepseek-ai/dsh-client-connection/client'
 import { parseExplanation } from '../core/parser.js'
-import type { Settings } from '../core/config.js'
+import { languageOf, type Settings } from '../core/config.js'
 import { copy, type CopyKey } from './i18n.js'
 import { createApi, type ResponseState } from './api.js'
 import { styles } from './styles.js'
@@ -22,13 +22,17 @@ export function apply(ctx: Context): void {
   const globals = globalThis as typeof globalThis & { __DSH_TRANSPORT__?: ClientTransportHooks }
   const api = createApi((input, init) => globals.__DSH_TRANSPORT__?.fetch
     ? globals.__DSH_TRANSPORT__.fetch(input, init ?? {}) : fetch(input, init))
-  const useCopy = () => {
+  const useSettings = () => {
     const locale = useSyncExternalStore(listener => ctx.locale.subscribe(listener), () => ctx.locale.getSnapshot().active)
-    return (key: CopyKey) => copy(locale, key)
+    const form = ctx.configForms.get<Settings>('dsh-you-should-know')
+    const snapshot = useSyncExternalStore(listener => form.subscribe(listener), () => form.getSnapshot())
+    const language = languageOf(snapshot.value?.language, locale)
+    return { form, snapshot, language }
   }
 
   const Card = (props: PropsRuntime<'conversation.input.dock'>) => {
-    const t = useCopy()
+    const { language } = useSettings()
+    const t = (key: CopyKey) => copy(language, key)
     const draft = props.useInput(input => input.draft)
     const hasAttachments = props.useInput(input => input.attachmentIds.length > 0)
     const inputPhase = props.useInput(input => input.phase)
@@ -58,8 +62,8 @@ export function apply(ctx: Context): void {
         const current = revision.current
         let interval = 2000
         try {
-          const next = await api({ sessionId: props.sessionId, clientId, visible: document.visibilityState === 'visible' }, controller.signal)
-          if (alive.current && revision.current === current) setState(next)
+          const next = await api({ sessionId: props.sessionId, clientId, visible: document.visibilityState === 'visible', locale: language }, controller.signal)
+          if (alive.current && revision.current === current && operations.current.size === 0) setState(next)
           interval = next.pollIntervalMs
         } catch { /* 下一次轮询会重新读取宿主状态。 */ }
         finally {
@@ -83,11 +87,11 @@ export function apply(ctx: Context): void {
         document.removeEventListener('visibilitychange', visibility)
         void api({ sessionId: props.sessionId, clientId, visible: false }, AbortSignal.timeout(2000)).catch(() => {})
       }
-    }, [props.sessionId])
+    }, [props.sessionId, language])
 
     const act = async (action: string) => {
       const view = state?.view
-      if (!view || busy) return
+      if (!view || busy || operations.current.size) return
       if (action === 'chat' && (draft.trim() || hasAttachments || inputPhase !== 'plain')) { setMessage(t('draft')); return }
       const span = action === 'chat' ? props.inputActions.captureInsertion() : undefined
       const controller = new AbortController()
@@ -110,7 +114,11 @@ export function apply(ctx: Context): void {
         if (alive.current && revision.current === current && !controller.signal.aborted) setMessage(t('error'))
       } finally {
         operations.current.delete(controller)
-        if (alive.current && revision.current === current) setBusy(false)
+        if (alive.current && revision.current === current) {
+          // 动作期间发出的旧轮询在动作结束后仍须失效。
+          revision.current += 1
+          setBusy(false)
+        }
       }
     }
     const view = state?.enabled ? state.view : undefined
@@ -156,27 +164,26 @@ export function apply(ctx: Context): void {
   }
 
   const SettingsPage = () => {
-    const t = useCopy()
-    const form = ctx.configForms.get<Settings>('dsh-you-should-know')
-    const snapshot = useSyncExternalStore(listener => form.subscribe(listener), () => form.getSnapshot())
+    const { form, snapshot, language } = useSettings()
+    const t = (key: CopyKey) => copy(language, key)
     const [catalog, setCatalog] = useState<ModelCatalog>()
-    const [message, setMessage] = useState('')
+    const [message, setMessage] = useState<CopyKey | ''>('')
     const [busy, setBusy] = useState(false)
     const mounted = useRef(true)
     const load = async () => {
       try {
         const result = await ctx.remote.session.modelCatalog()
         if (!mounted.current) return
-        if (!result.ok) { setMessage(t('catalogError')); return }
+        if (!result.ok) { setMessage('catalogError'); return }
         setCatalog(result.value)
-        setMessage(result.value.failures.length ? t('catalogError') : '')
-      } catch { if (mounted.current) setMessage(t('catalogError')) }
+        setMessage(result.value.failures.length ? 'catalogError' : '')
+      } catch { if (mounted.current) setMessage('catalogError') }
     }
     useEffect(() => { mounted.current = true; void load(); return () => { mounted.current = false } }, [])
     const save = async (operations: Parameters<typeof form.mutate>[0]) => {
       setBusy(true)
-      try { const ok = await form.mutate(operations); if (mounted.current) setMessage(t(ok ? 'saved' : 'settingsError')) }
-      catch { if (mounted.current) setMessage(t('settingsError')) }
+      try { const ok = await form.mutate(operations); if (mounted.current) setMessage(ok ? 'saved' : 'settingsError') }
+      catch { if (mounted.current) setMessage('settingsError') }
       finally { if (mounted.current) setBusy(false) }
     }
     if (snapshot.status === 'loading') return <p>{t('loading')}</p>
@@ -188,6 +195,13 @@ export function apply(ctx: Context): void {
       <h3>You Should Know</h3>
       <p>{t('usage')}</p>
       <label><input type="checkbox" checked={value.enabled} disabled={busy} onChange={event => { void save([{ op: 'set', path: ['enabled'], value: event.target.checked }]) }} /> {t('enabled')}</label>
+      <label>{t('language')}<select value={value.language ?? 'auto'} disabled={busy} onChange={event => {
+        void save([{ op: 'set', path: ['language'], value: event.target.value }])
+      }}>
+        <option value="auto">{t('system')}</option>
+        <option value="zh-CN">中文</option>
+        <option value="en-US">English</option>
+      </select></label>
       <label>{t('model')}<select value={selected} disabled={busy} onChange={event => {
         if (event.target.value === 'follow') void save([{ op: 'set', path: ['modelMode'], value: 'follow' }])
         else {
@@ -200,7 +214,7 @@ export function apply(ctx: Context): void {
         {catalog?.groups.map(group => <optgroup key={group.id} label={group.name}>{group.models.map(model => <option key={model.id} value={JSON.stringify([group.id, model.id])}>{model.name}</option>)}</optgroup>)}
       </select></label>
       <button type="button" onClick={() => { void load() }}>{t('refresh')}</button>
-      {message && <p role="status">{message}</p>}
+      {message && <p role="status">{t(message)}</p>}
     </div>
   }
   ctx.effect(() => {

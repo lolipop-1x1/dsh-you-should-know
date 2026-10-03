@@ -3,11 +3,11 @@ import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
 import LlmRuntime, { LlmAdapter, createUserMessage, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
-import { defaults } from '../src/core/config.js'
+import { defaults, type Settings } from '../src/core/config.js'
 import { emptyState } from '../src/core/state.js'
 import { apply } from '../src/host/index.js'
 
-async function fixture(pending = false) {
+async function fixture(pending = false, settings: Partial<Settings> = {}) {
   const ctx = new Context()
   onTestFinished(() => ctx.fiber.dispose())
   await ctx.plugin(LlmRuntime)
@@ -32,10 +32,12 @@ async function fixture(pending = false) {
   let release!: () => void
   const gate = new Promise<void>(resolve => { release = resolve })
   const requests: { observer: boolean; initiator?: string }[] = []
+  const prompts: string[] = []
   class Adapter extends LlmAdapter {
     async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
       const observer = options.messages.length > 1
       requests.push({ observer, initiator: ctx.agents.currentInitiator()?.id })
+      if (observer) prompts.push(options.messages.at(-1)!.content.filter(block => block.type === 'text').map(block => block.text).join('\n'))
       if (observer && pending) await gate
       yield { type: 'text-delta', index: 0, text: observer ? 'learn: A useful host observation.\nexplain: A relevant consequence.' : 'done' }
       yield { type: 'finish', reason: { kind: 'stop' } }
@@ -43,7 +45,7 @@ async function fixture(pending = false) {
   }
   ctx.llm.registerAdapter(['test'], new Adapter())
   const fiber = await ctx.plugin({ name: 'ysk-test', inject: ['llm', 'agents', 'storageDomain'],
-    apply: child => apply(child, { get: () => ({ ...defaults, enabled: true }) } as never),
+    apply: child => apply(child, { get: () => ({ ...defaults, enabled: true, ...settings }) } as never),
   })
   const api = async (input: unknown, headers = { 'content-type': 'application/json' }) => route(new Request('http://host/api/you-should-know', {
     method: 'POST', headers, body: typeof input === 'string' ? input : JSON.stringify(input),
@@ -64,7 +66,7 @@ async function fixture(pending = false) {
     }) as GenerateOptions
     await ctx.agents.withInitiator(agent, async () => { for await (const _ of ctx.llm.stream(options)) {} })
   }
-  return { ctx, fiber, agents, api, read, run, requests, release, flush, close, state: () => state }
+  return { ctx, fiber, agents, api, read, run, requests, prompts, release, flush, close, state: () => state }
 }
 
 describe('Host 原生事件和接口', () => {
@@ -100,10 +102,26 @@ describe('Host 原生事件和接口', () => {
     [{ sessionId: 'x'.repeat(257) }, 400],
     [{ sessionId: 'missing' }, 404],
     [{ sessionId: 'main', action: 'known' }, 400],
+    [{ sessionId: 'main', locale: '' }, 400],
+    [{ sessionId: 'main', locale: 'x'.repeat(65) }, 400],
+    [{ sessionId: 'main', locale: 123 }, 400],
   ])('拒绝非法请求 %j', async (input, status) => {
     const f = await fixture()
     expect((await f.api(input)).status).toBe(status)
     expect(f.state().seen).toEqual([])
+  })
+  it.each([
+    ['auto', 'zh-CN', 'zh-CN', '使用简体中文'],
+    ['auto', 'en-US', 'en-US', 'Write in English.'],
+    ['en-US', 'zh-CN', 'en-US', 'Write in English.'],
+    ['zh-CN', 'en-US', 'zh-CN', '使用简体中文'],
+  ] as const)('原生接口传递语言：设置 %s，客户端 %s，结果 %s', async (language, locale, expected, prompt) => {
+    const f = await fixture(false, { language })
+    expect((await f.api({ sessionId: 'main', clientId: 'browser', visible: true, locale })).status).toBe(200)
+    await f.run(f.agents[0]!, 7)
+    await f.flush()
+    expect(f.prompts[0]).toContain(prompt)
+    expect((await f.read()).view?.language).toBe(expected)
   })
   it('过期提醒ID返回 accepted false，不清空当前提醒', async () => {
     const f = await fixture()

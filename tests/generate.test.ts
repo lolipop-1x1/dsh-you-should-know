@@ -51,6 +51,15 @@ describe('Harness 原生模型调用', () => {
     expect(f.execute).not.toHaveBeenCalled()
     expect(f.snapshot.messages).toHaveLength(1)
   })
+  it('汇总两次回答中的文本，第二次仍请求工具也不丢弃已有文本', async () => {
+    const call: StreamChunk = { type: 'block-end', index: 1, block: { type: 'tool-call', id: ToolCallId('denied'), name: 'read_file', arguments: '{}' } }
+    const first: StreamChunk[] = [{ type: 'text-delta', index: 0, text: 'learn: A useful observation.' }, call, { type: 'finish', reason: { kind: 'tool-calls' } }]
+    const second: StreamChunk[] = [{ type: 'text-delta', index: 0, text: 'explain: An important consequence.' }, call, { type: 'finish', reason: { kind: 'tool-calls' } }]
+    const f = await fixture([first, second])
+    expect(await generate(f.ctx, f.snapshot, 'observe', defaults, new AbortController().signal)).toBe('learn: A useful observation.\nexplain: An important consequence.')
+    expect(f.requests).toHaveLength(2)
+    expect(f.execute).not.toHaveBeenCalled()
+  })
   it('独立模型切换保留消息和工具前缀，移除不适用的主模型参数', async () => {
     const f = await fixture([[{ type: 'text-delta', index: 0, text: 'learn: none' }, { type: 'finish', reason: { kind: 'stop' } }]])
     Object.assign(f.snapshot, { reasoningEffort: 'default', temperature: 0.2, maxTokens: 1000, stop: ['stop'] })

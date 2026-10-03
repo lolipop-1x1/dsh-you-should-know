@@ -10,6 +10,7 @@ const zh = {
   catalogError: '部分模型目录未能加载。', refresh: '刷新模型目录', heads: '注意事项', know: '值得了解',
   discuss: '以下是旁路观察者提出的事项。请结合当前任务讨论其含义与影响。',
   collapse: '收起提醒', open: '展开提醒',
+  language: '语言', system: '跟随系统',
 } as const
 const en: Record<keyof typeof zh, string> = {
   learn: 'Learn more', knew: 'Knew this already', dismiss: 'Dismiss', understood: 'Understood', chat: 'Chat in main session',
@@ -23,6 +24,7 @@ const en: Record<keyof typeof zh, string> = {
   catalogError: 'Some model catalogs could not be loaded.', refresh: 'Refresh model catalog', heads: 'Heads up', know: 'You should know',
   discuss: 'Here is a note from a side observer. Please discuss its meaning and impact on the current task.',
   collapse: 'Minimize note', open: 'Open note',
+  language: 'Language', system: 'Follow system',
 }
 export type CopyKey = keyof typeof zh
 export const copy = (locale: string, key: CopyKey): string => /^zh(?:-|$)/iu.test(locale) ? zh[key] : en[key]

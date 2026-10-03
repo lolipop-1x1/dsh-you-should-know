@@ -9,6 +9,7 @@ export const viewSchema = z.object({
   shownAt: z.number(),
   promptsSurvived: z.number().int().nonnegative(),
   expanded: z.boolean().default(false),
+  language: z.enum(['zh-CN', 'en-US']).optional(),
   expiresAt: z.number().optional(),
 })
 export type View = z.infer<typeof viewSchema>

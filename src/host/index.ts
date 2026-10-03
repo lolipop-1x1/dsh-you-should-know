@@ -21,6 +21,7 @@ const requestSchema = z.object({
   sessionId: z.string().min(1).max(256),
   clientId: z.string().min(1).max(128).optional(),
   visible: z.boolean().optional(),
+  locale: z.string().min(1).max(64).optional(),
   viewId: z.string().max(128).optional(),
   action: z.enum(['expand', 'known', 'dismiss', 'helpful', 'irrelevant', 'unclear', 'chat', 'chat-confirm']).optional(),
 }).strict()
@@ -66,7 +67,7 @@ export async function apply(ctx: Context, config: LiveConfig): Promise<void> {
     if (session.header.origin === 'subagent') return
     // LOOP 在步骤开始后提交用户消息，按消息事件计数，避免把上轮输入算到新提醒上。
     if (event.type === 'user/message' && event.data.source.kind === 'user') {
-      engine.beginTurn(id, frames.get(id)?.turn ?? 0, 1)
+      engine.beginTurn(id, frames.get(id)?.turn ?? 0, 1, false)
     }
     if (event.type === 'step/start') {
       frames.set(id, event.data)
@@ -96,7 +97,7 @@ export async function apply(ctx: Context, config: LiveConfig): Promise<void> {
         try {
           const input = requestSchema.parse(await body(request))
           if (!ctx.agents.get(SessionId(input.sessionId))) return Response.json({ error: '会话不存在。' }, { status: 404 })
-          if (input.clientId && input.visible !== undefined) engine.presenceUpdate(input.sessionId, input.clientId, input.visible)
+          if (input.clientId && input.visible !== undefined) engine.presenceUpdate(input.sessionId, input.clientId, input.visible, input.locale)
           let accepted: boolean | undefined
           if (input.action) {
             if (!input.viewId) return Response.json({ error: '请求缺少提醒标识。' }, { status: 400 })

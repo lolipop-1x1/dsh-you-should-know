@@ -130,6 +130,16 @@ describe('提醒交互', () => {
     expect(restored.generate).not.toHaveBeenCalled()
     expect((await restored.engine.read('s')).view?.kind).toBe('explained')
   })
+  it('升级前未标注语言的解释保留原文，恢复后无需模型快照也能展开', async () => {
+    const initial = emptyState()
+    initial.sessions = [{ id: 's', view: { id: 'legacy', kind: 'offer', line: '旧提醒。', tag: 'You should know',
+      explanation: '**旧解释**\n保留已生成的内容。', shownAt: 1000, promptsSurvived: 0, expanded: false } }]
+    const f = await fixture(undefined, initial)
+    f.engine.presenceUpdate('s', 'browser', true, 'en-US')
+    expect(await f.engine.action('s', 'legacy', 'expand')).toBe(true)
+    expect((await f.engine.read('s')).view?.explanation).toContain('保留已生成的内容')
+    expect(f.generate).not.toHaveBeenCalled()
+  })
   it('解释请求失败可重试', async () => {
     const model = vi.fn().mockResolvedValueOnce('learn: A retryable constraint.')
       .mockRejectedValueOnce(new Error('model unavailable')).mockResolvedValueOnce('A working explanation.')
@@ -153,6 +163,7 @@ describe('提醒交互', () => {
     expect((await f.engine.read('s')).view).toBeDefined()
     expect(await f.engine.action('s', view.id, 'chat-confirm')).toBe(true)
     expect((await f.engine.read('s')).view).toBeUndefined()
+    expect(f.state().known).toEqual([view.line])
   })
   it('解释缺失才额外请求，旧提醒的反馈不会影响新提醒', async () => {
     const f = await fixture(vi.fn().mockResolvedValueOnce('learn: An important constraint.').mockResolvedValueOnce('The constraint affects the current task.'))
@@ -164,14 +175,15 @@ describe('提醒交互', () => {
     expect(await f.engine.action('s', 'old-id', 'known')).toBe(false)
     expect((await f.engine.read('s')).view?.id).toBe(view.id)
   })
-  it('关闭先询问反馈，二十秒超时不改忽略计数', async () => {
+  it('关闭立即重置退避，反馈超时不再改变计数', async () => {
     const f = await fixture(undefined, { ...emptyState(), ignored: 5 })
     const view = await f.offer()
     await f.engine.action('s', view.id, 'dismiss')
+    expect(f.state().ignored).toBe(0)
     expect((await f.engine.read('s')).view?.kind).toBe('asked')
     f.time(21_001)
     expect((await f.engine.read('s')).view).toBeUndefined()
-    expect(f.state().ignored).toBe(5)
+    expect(f.state().ignored).toBe(0)
     expect(f.state().skip).toBe(0)
   })
   it('未展开提醒越过两次用户输入才忽略，第三次连续忽略后跳一次检查', async () => {
@@ -249,10 +261,159 @@ describe('输出与状态容量', () => {
 })
 
 describe('并发、租期和恢复', () => {
+  it('仍在 known 但已离开 seen 窗口的主题不得再次展示', async () => {
+    const f = await fixture(undefined, { ...emptyState(), seen: ['Other topic.'], known: ['The cache can delay updates by five minutes.'] })
+    await f.offer()
+    expect((await f.engine.read('s')).view).toBeUndefined()
+    expect(f.state().seen).toEqual(['Other topic.'])
+  })
+  it('关闭重置已有 skip，开始新轮立即清除反馈卡', async () => {
+    const initial = emptyState()
+    initial.ignored = 4
+    initial.skip = 2
+    initial.sessions = [{ id: 's', view: { id: 'v', kind: 'offer', line: 'Note.', tag: 'Heads up', shownAt: 1000, promptsSurvived: 0, expanded: false } }]
+    const f = await fixture(undefined, initial)
+    await f.engine.action('s', 'v', 'dismiss')
+    expect(f.state()).toMatchObject({ ignored: 0, skip: 0 })
+    f.engine.beginTurn('s', 2, 0)
+    await f.flush()
+    expect((await f.engine.read('s')).view).toBeUndefined()
+  })
+  it('新轮开始不取消解释，也递增已经展开视图的输入计数', async () => {
+    let finish!: (text: string) => void
+    const model = vi.fn().mockResolvedValueOnce('learn: An important constraint.')
+      .mockImplementationOnce(() => new Promise<string>(resolve => { finish = resolve }))
+    const f = await fixture(model)
+    const view = await f.offer()
+    await f.engine.action('s', view.id, 'expand')
+    await f.flush()
+    f.engine.beginTurn('s', 2, 1)
+    await f.flush()
+    expect((await f.engine.read('s')).view?.kind).toBe('explaining')
+    finish('**A clear consequence**\nThe constraint matters.')
+    await f.flush()
+    f.engine.beginTurn('s', 3, 1)
+    await f.flush()
+    expect((await f.engine.read('s')).view).toMatchObject({ kind: 'explained', promptsSurvived: 1 })
+  })
+  it('自动语言跟随客户端，手动选择同时控制观察与展开的提示词', async () => {
+    const model = vi.fn().mockResolvedValueOnce('learn: A language-aware constraint.')
+      .mockResolvedValueOnce('**解释**\n具体影响。')
+    const f = await fixture(model)
+    f.engine.presenceUpdate('s', 'browser', true, 'en-US')
+    const view = await f.offer()
+    expect(model.mock.calls[0]?.[1]).toContain('Write in English.')
+    f.config({ language: 'zh-CN' })
+    await f.engine.action('s', view.id, 'expand')
+    await f.flush()
+    expect(model.mock.calls[1]?.[1]).toContain('使用简体中文')
+    expect((await f.engine.read('s')).view).toMatchObject({ kind: 'explained', language: 'zh-CN' })
+  })
+  it('跟随系统的语言改变使旧语言在途结果失效', async () => {
+    let finish!: (text: string) => void
+    const f = await fixture(vi.fn(() => new Promise<string>(resolve => { finish = resolve })))
+    f.engine.presenceUpdate('s', 'browser', true, 'zh-CN')
+    f.engine.capture('s', 1, 7, snapshot)
+    await f.flush()
+    f.engine.presenceUpdate('s', 'browser', true, 'en-US')
+    finish(response)
+    await f.flush()
+    expect(f.state().seen).toEqual([])
+  })
+  it('不同语言客户端的交替心跳不取消观察，原客户端离开后才切换语言', async () => {
+    const model = vi.fn(() => new Promise<string>(() => {}))
+    const f = await fixture(model)
+    f.engine.presenceUpdate('s', 'browser', true, 'zh-CN')
+    f.engine.presenceUpdate('s', 'second', true, 'en-US')
+    f.engine.capture('s', 1, 7, snapshot)
+    await f.flush()
+    const signal = model.mock.calls[0]?.[3] as AbortSignal
+    for (let i = 0; i < 3; i += 1) {
+      f.engine.presenceUpdate('s', 'second', true, 'en-US')
+      f.engine.presenceUpdate('s', 'browser', true, 'zh-CN')
+    }
+    expect(signal.aborted).toBe(false)
+    f.engine.presenceUpdate('s', 'browser', false)
+    expect(signal.aborted).toBe(true)
+    f.engine.capture('s', 1, 13, snapshot)
+    await f.flush()
+    expect(model.mock.calls[1]?.[1]).toContain('Write in English.')
+  })
+  it('主客户端租期过期后切换语言，不接受旧语言迟到结果', async () => {
+    let finish!: (text: string) => void
+    const f = await fixture(vi.fn(() => new Promise<string>(resolve => { finish = resolve })))
+    f.engine.presenceUpdate('s', 'browser', true, 'zh-CN')
+    f.time(15_000)
+    f.engine.presenceUpdate('s', 'second', true, 'en-US')
+    f.engine.capture('s', 1, 7, snapshot)
+    await f.flush()
+    f.time(21_000)
+    finish(response)
+    await f.flush()
+    expect(f.state().seen).toEqual([])
+  })
+  it('反馈视图记录关闭时刻，轮中输入不清除反馈，新轮才清除', async () => {
+    const f = await fixture()
+    const view = await f.offer()
+    f.time(5000)
+    await f.engine.action('s', view.id, 'dismiss')
+    f.engine.beginTurn('s', 1, 1, false)
+    await f.flush()
+    expect((await f.engine.read('s')).view).toMatchObject({ kind: 'asked', shownAt: 5000, expiresAt: 25_000 })
+    f.engine.beginTurn('s', 2, 0)
+    await f.flush()
+    expect((await f.engine.read('s')).view).toBeUndefined()
+  })
+  it('手动切换语言取消在途解释，旧响应不写入，新请求使用所选语言', async () => {
+    let finish!: (text: string) => void
+    const model = vi.fn().mockResolvedValueOnce('learn: A language constraint.')
+      .mockImplementationOnce(() => new Promise<string>(resolve => { finish = resolve }))
+      .mockResolvedValueOnce('**中文解释**\n具体影响。')
+    const f = await fixture(model)
+    const view = await f.offer()
+    await f.engine.action('s', view.id, 'expand')
+    await f.flush()
+    f.config({ language: 'zh-CN' })
+    expect((await f.engine.read('s')).view?.kind).toBe('failed')
+    finish('An obsolete English explanation.')
+    await f.flush()
+    await f.engine.action('s', view.id, 'expand')
+    await f.flush()
+    expect(model.mock.calls[2]?.[1]).toContain('使用简体中文')
+    expect((await f.engine.read('s')).view?.explanation).toContain('中文解释')
+  })
+  it('反馈到期无需轮询即可清除，卸载撤回计时器', async () => {
+    vi.useFakeTimers()
+    onTestFinished(() => vi.useRealTimers())
+    const initial = emptyState()
+    initial.sessions = [{ id: 's', view: { id: 'v', kind: 'offer', line: 'Note.', tag: 'Heads up', shownAt: 1000, promptsSurvived: 0, expanded: false } }]
+    const f = await fixture(undefined, initial)
+    await f.engine.action('s', 'v', 'dismiss')
+    expect(vi.getTimerCount()).toBe(1)
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(f.state().sessions[0]?.view).toBeUndefined()
+    await f.engine.dispose()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+  it('恢复反馈计时器沿用原到期时间，不重新延长二十秒', async () => {
+    vi.useFakeTimers()
+    onTestFinished(() => vi.useRealTimers())
+    const initial = emptyState()
+    initial.sessions = [{ id: 's', view: { id: 'v', kind: 'asked', line: 'Note.', tag: 'Heads up',
+      shownAt: 500, expiresAt: 6000, promptsSurvived: 0, expanded: false } }]
+    const f = await fixture(undefined, initial)
+    expect(vi.getTimerCount()).toBe(1)
+    await vi.advanceTimersByTimeAsync(4999)
+    expect(f.state().sessions[0]?.view?.kind).toBe('asked')
+    await vi.advanceTimersByTimeAsync(1)
+    expect(f.state().sessions[0]?.view).toBeUndefined()
+  })
   it('存储写入失败会报告错误，后续操作可以继续且不产生未处理拒绝', async () => {
     const error = vi.fn()
     const save = vi.fn().mockRejectedValueOnce(new Error('storage unavailable')).mockResolvedValue(undefined)
-    const engine = new Engine(emptyState(), { settings: () => ({ ...defaults, enabled: true }), save,
+    const initial = emptyState()
+    initial.sessions = [{ id: 's', view: { id: 'v', kind: 'offer', line: 'Note.', tag: 'Heads up', shownAt: 1000, promptsSurvived: 0, expanded: false } }]
+    const engine = new Engine(initial, { settings: () => ({ ...defaults, enabled: true }), save,
       generate: vi.fn(async () => response), now: () => 1000, error,
     })
     onTestFinished(() => engine.dispose())
@@ -265,7 +426,7 @@ describe('并发、租期和恢复', () => {
     expect(save).toHaveBeenCalledTimes(2)
     expect(await engine.read('s')).toMatchObject({ enabled: true })
   })
-  it('新轮次取消旧检查，不遵循 abort 的迟到结果不能展示', async () => {
+  it('新轮次继续旧检查，未被后续检查替代的结果仍可展示', async () => {
     let resolve!: (text: string) => void
     const f = await fixture(vi.fn(() => new Promise<string>(done => { resolve = done })))
     f.engine.capture('s', 1, 7, snapshot)
@@ -273,8 +434,8 @@ describe('并发、租期和恢复', () => {
     f.engine.beginTurn('s', 2, 1)
     resolve(response)
     await f.flush()
-    expect(f.state().seen).toEqual([])
-    expect((await f.engine.read('s')).view).toBeUndefined()
+    expect(f.state().seen).toEqual(['The cache can delay updates by five minutes.'])
+    expect((await f.engine.read('s')).view?.kind).toBe('offer')
   })
   it('两会话的观察独立，关闭一个界面不取消另一个', async () => {
     const resolvers: ((text: string) => void)[] = []

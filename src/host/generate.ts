@@ -18,6 +18,7 @@ export async function generate(ctx: Context, snapshot: GenerateOptions, prompt: 
     delete options.maxTokens
     delete options.stop
   }
+  const replies: string[] = []
   for (let attempt = 0; attempt < 2; attempt += 1) {
     signal.throwIfAborted()
     const result = new BlockAssembler()
@@ -29,8 +30,10 @@ export async function generate(ctx: Context, snapshot: GenerateOptions, prompt: 
       throw new Error('观察模型未正常完成回答。')
     }
     const blocks = result.blocks()
+    const text = blocks.filter(block => block.type === 'text').map(block => block.text).join('\n')
+    if (text.trim()) replies.push(text)
     const calls = blocks.filter(block => block.type === 'tool-call')
-    if (!calls.length) return blocks.filter(block => block.type === 'text').map(block => block.text).join('\n')
+    if (!calls.length) return replies.join('\n')
     options.messages.push(createAssistantMessage({
       content: blocks, source: { provider: options.provider, model: options.model, replayState: result.replayState },
     }))
@@ -40,5 +43,6 @@ export async function generate(ctx: Context, snapshot: GenerateOptions, prompt: 
       content: [{ type: 'text', text: '观察者禁止使用工具。请只根据已有上下文给出文字回答。' }],
     }))
   }
+  if (replies.length) return replies.join('\n')
   throw new Error('观察模型在两次生成内没有给出文字回答。')
 }
