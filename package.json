@@ -53,7 +53,7 @@
     "build": "node scripts/build.mjs",
     "test": "vitest run",
     "test:browser": "node tests/browser/serve.mjs",
-    "check": "npm run typecheck && npm test && npm run build && node scripts/check-package.mjs",
+    "check": "node scripts/check-lockfile.mjs && npm run typecheck && npm test && npm run build && node scripts/check-package.mjs",
     "prepare": "node scripts/prepare.mjs",
     "prepack": "npm run build && node scripts/check-package.mjs"
   },
