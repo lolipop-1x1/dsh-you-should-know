@@ -1,0 +1,99 @@
+{
+  "name": "dsh-you-should-know",
+  "version": "0.1.0",
+  "description": "在 DeepSeek Harness 任务中提醒用户理解重要事实和方案取舍。",
+  "type": "module",
+  "license": "MIT",
+  "author": "lolipop-1x1",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lolipop-1x1/dsh-you-should-know.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lolipop-1x1/dsh-you-should-know/issues"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "main": "./dist/host/index.js",
+  "types": "./dist/types/host/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/host/index.d.ts",
+      "default": "./dist/host/index.js"
+    },
+    "./client": "./dist/client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "locale",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "docs/设计文档.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-api-gateway"
+      ]
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.host.json --noEmit && tsc -p tsconfig.client.json --noEmit",
+    "build": "node scripts/build.mjs",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test && npm run build && node scripts/check-package.mjs",
+    "prepare": "node scripts/prepare.mjs",
+    "prepack": "npm run build && node scripts/check-package.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.4 || ^4.0.5-alpha.1",
+    "@deepseek-ai/dsh-agent": ">=0.2.0-rc.2 <0.3.0-0",
+    "@deepseek-ai/dsh-client-connection": ">=0.2.0-rc.2 <0.3.0-0",
+    "@deepseek-ai/dsh-llm": ">=0.2.0-rc.2 <0.3.0-0",
+    "@deepseek-ai/dsh-session": ">=0.2.0-rc.2 <0.3.0-0",
+    "@deepseek-ai/dsh-storage-domain": ">=0.2.0-rc.2 <0.3.0-0",
+    "@deepseek-ai/schemastery": "^3.18.4 || ^3.18.5-alpha.1"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.4",
+    "@deepseek-ai/dsh-agent": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-api-gateway": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-api-session-controller": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-connection": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-locale": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-store": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-session": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-slots": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-session": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-storage-domain": "0.2.0-rc.2",
+    "@deepseek-ai/schemastery": "3.18.4",
+    "@types/node": "^24.0.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "esbuild": "^0.25.11",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4",
+    "@deepseek-ai/dsh-app-boot": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-storage-json": "0.2.0-rc.2"
+  }
+}
