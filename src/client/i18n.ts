@@ -16,6 +16,15 @@ const zh = {
   languageHint: '用于菜单、后续提醒与解释。',
   modelHint: '用于观察和解释，默认跟随主会话当前模型。',
   autosave: '更改自动保存', refreshing: '正在刷新模型目录…',
+  interval: '观察步长', intervalHint: '默认每 6 个模型步骤检查一次；一个步骤可能包含多个工具调用。',
+  limit: '每轮检查次数上限', limitHint: '每轮用户任务分别计数。失败或取消的检查也计入，展开解释不计入。',
+  unlimited: '不限', custom: '自定义', steps: '步', checks: '次',
+  integerError: '请输入范围内的整数。',
+  topics: '主题记录', topicsHint: '跨会话共享，每类最多保留 50 条。两类记录都会用于避免重复提醒。',
+  seen: '已展示', known: '已了解', clear: '清空', confirmClear: '确认清空', cancel: '取消',
+  clearHint: '仅清空这类记录，保留另一类记录和当前提醒。',
+  emptyTopics: '暂无主题记录', topicsLoading: '正在加载主题记录…', topicsError: '主题记录操作失败，请重试。',
+  topicsCleared: '所选主题记录已清空。', refreshTopics: '刷新主题记录',
 } as const
 const en: Record<keyof typeof zh, string> = {
   learn: 'Learn more', knew: 'Knew this already', dismiss: 'Dismiss', understood: 'Understood', chat: 'Chat in main session',
@@ -35,6 +44,15 @@ const en: Record<keyof typeof zh, string> = {
   languageHint: 'Applies to this menu and future notes and explanations.',
   modelHint: 'Used for observations and explanations. Follows the current session model by default.',
   autosave: 'Changes save automatically', refreshing: 'Refreshing model catalog…',
+  interval: 'Observation interval', intervalHint: 'Check every 6 model steps by default. A step may include several tool calls.',
+  limit: 'Checks per turn', limitHint: 'Count each user task separately, including failed or cancelled checks. Explanations do not count.',
+  unlimited: 'Unlimited', custom: 'Custom', steps: 'steps', checks: 'checks',
+  integerError: 'Enter a whole number within the allowed range.',
+  topics: 'Topic history', topicsHint: 'Shared across sessions, with up to 50 entries per list. Both lists help avoid repeated notes.',
+  seen: 'Seen', known: 'Known', clear: 'Clear', confirmClear: 'Confirm clear', cancel: 'Cancel',
+  clearHint: 'Clear only this list. Keep the other list and the current note.',
+  emptyTopics: 'No topics yet', topicsLoading: 'Loading topic history…', topicsError: 'Topic history could not be updated. Please retry.',
+  topicsCleared: 'The selected topic list was cleared.', refreshTopics: 'Refresh topic history',
 }
 export type CopyKey = keyof typeof zh
 export const copy = (locale: string, key: CopyKey): string => /^zh(?:-|$)/iu.test(locale) ? zh[key] : en[key]

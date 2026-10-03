@@ -3,7 +3,7 @@ import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { languageOf, type Language, type Settings } from '../core/config.js'
 import { parseExplanation, parseProposal } from '../core/parser.js'
 import { explanationPrompt, observerPrompt } from '../core/prompts.js'
-import { addTopic, backoff, replaceSession, type SessionState, type State, type View } from '../core/state.js'
+import { addTopic, backoff, replaceSession, type SessionState, type State, type TopicList, type Topics, type View } from '../core/state.js'
 
 export interface Ports {
   settings(): Settings
@@ -13,7 +13,7 @@ export interface Ports {
   error(error: unknown): void
 }
 export type Action = 'expand' | 'known' | 'dismiss' | 'helpful' | 'irrelevant' | 'unclear' | 'chat' | 'chat-confirm'
-interface Job { controller: AbortController; done: Promise<void>; token: string; language: Language }
+interface Job { controller: AbortController; done: Promise<void>; token: string; language: Language; purpose: 'observation' | 'explanation' }
 
 // 卸载不等待忽略取消信号的适配器；迟到响应仍有拒绝处理，不能写入状态。
 function abortable(signal: AbortSignal, run: () => Promise<string>): Promise<string> {
@@ -151,13 +151,16 @@ export class Engine {
       const session = this.session(id)
       if (this.closed || !settings.enabled || index <= 0 || index % settings.checkEvery !== 0
         || !this.visible(id) || session.view || session.offeredTurn === turn || this.jobs.has(id)) return
+      const checks = session.observationTurn === turn ? session.observationChecks ?? 0 : 0
+      if (settings.maxChecksPerTurn > 0 && checks >= settings.maxChecksPerTurn) return
       if (this.state.skip) {
         await this.commit({ ...this.state, skip: this.state.skip - 1 })
         return
       }
-      await this.put({ ...session, askedTurn: turn })
+      // 请求发起前持久化计数；失败或取消仍可能产生用量，重启也不能重置本轮上限。
+      await this.put({ ...session, askedTurn: turn, observationTurn: turn, observationChecks: checks + 1 })
       const language = this.language(id, settings)
-      this.start(id, snapshot, observerPrompt(this.state.seen, this.state.known, language), settings, async text => {
+      this.start(id, snapshot, observerPrompt(this.state.seen, this.state.known, language), settings, 'observation', async text => {
         const proposal = parseProposal(text)
         const current = this.session(id)
         if (proposal.kind !== 'line' || current.askedTurn !== turn || current.view) return
@@ -174,8 +177,8 @@ export class Engine {
   }
 
   private start(id: string, snapshot: GenerateOptions, prompt: string, settings: Settings,
-    accept: (text: string) => Promise<void>, failure?: () => Promise<void>): void {
-    const job: Job = { controller: new AbortController(), token: this.settingsKey, language: this.language(id, settings), done: Promise.resolve() }
+    purpose: Job['purpose'], accept: (text: string) => Promise<void>, failure?: () => Promise<void>): void {
+    const job: Job = { controller: new AbortController(), token: this.settingsKey, language: this.language(id, settings), purpose, done: Promise.resolve() }
     this.jobs.set(id, job)
     job.done = abortable(job.controller.signal, () => this.ports.generate(snapshot, prompt, settings, job.controller.signal)).then(text => this.enqueue(async () => {
       this.sync()
@@ -208,6 +211,20 @@ export class Engine {
     })
   }
 
+  topics(): Promise<Topics> {
+    return this.enqueue(async () => ({ seen: [...this.state.seen], known: [...this.state.known] }))
+  }
+
+  clearTopics(list: TopicList): Promise<Topics> {
+    return this.enqueue(async () => {
+      if (this.closed) throw new Error('插件已卸载。')
+      await this.commit({ ...this.state, [list]: [] })
+      // 撤回使用旧主题记录的观察请求，避免迟到结果重新写回刚清空的列表。
+      for (const [id, job] of this.jobs) if (job.purpose === 'observation') this.cancel(id)
+      return { seen: [...this.state.seen], known: [...this.state.known] }
+    })
+  }
+
   action(id: string, viewId: string, action: Action): Promise<boolean> {
     return this.enqueue(async () => {
       const settings = this.sync()
@@ -228,7 +245,7 @@ export class Engine {
           const snapshot = this.snapshots.get(id)
           if (!snapshot) return false
           await this.put({ ...session, view: { ...view, kind: 'explaining', expanded: true } })
-          this.start(id, snapshot, explanationPrompt(view.line, language), settings, async text => {
+          this.start(id, snapshot, explanationPrompt(view.line, language), settings, 'explanation', async text => {
             if (!parseExplanation(text).length) throw new Error('观察模型没有提供可用解释。')
             const current = this.session(id)
             if (current.view?.id === viewId) await this.put({ ...current, view: { ...view, kind: 'explained', explanation: text, expanded: true, language } })

@@ -4,6 +4,13 @@ import { explanationPrompt, observerPrompt } from '../src/core/prompts.js'
 import { Config } from '../src/host/config.js'
 
 describe('语言设置与旁路协议', () => {
+  it('旧配置补全无限检查上限，步长与上限拒绝非法数字', async () => {
+    const result = await Config['~standard'].validate({})
+    expect('value' in result && result.value.get().maxChecksPerTurn).toBe(0)
+    for (const patch of [{ checkEvery: 0 }, { checkEvery: 1.5 }, { maxChecksPerTurn: -1 }, { maxChecksPerTurn: 1.5 }, { maxChecksPerTurn: Infinity }]) {
+      expect(await Config['~standard'].validate(patch)).toHaveProperty('issues')
+    }
+  })
   it('默认跟随系统，旧配置无需迁移，拒绝非法语言', async () => {
     const result = await Config['~standard'].validate({})
     expect('value' in result && result.value.get().language).toBe('auto')

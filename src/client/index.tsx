@@ -11,17 +11,20 @@ import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ClientTransportHooks } from '@deepseek-ai/dsh-client-connection/client'
 import { parseExplanation } from '../core/parser.js'
-import { languageOf, type Settings } from '../core/config.js'
+import { defaults, languageOf, type Language, type Settings } from '../core/config.js'
+import type { TopicList, Topics } from '../core/state.js'
 import { copy, type CopyKey } from './i18n.js'
-import { createApi, type ResponseState } from './api.js'
+import { createApi, createTopicsApi, type Fetch, type ResponseState } from './api.js'
 import { styles } from './styles.js'
 
 export const inject = ['slots', 'locale', 'configForms', 'remote', 'remote.session']
 
 export function apply(ctx: Context): void {
   const globals = globalThis as typeof globalThis & { __DSH_TRANSPORT__?: ClientTransportHooks }
-  const api = createApi((input, init) => globals.__DSH_TRANSPORT__?.fetch
-    ? globals.__DSH_TRANSPORT__.fetch(input, init ?? {}) : fetch(input, init))
+  const fetcher: Fetch = (input, init) => globals.__DSH_TRANSPORT__?.fetch
+    ? globals.__DSH_TRANSPORT__.fetch(input, init ?? {}) : fetch(input, init)
+  const api = createApi(fetcher)
+  const topicsApi = createTopicsApi(fetcher)
   const useSettings = () => {
     const locale = useSyncExternalStore(listener => ctx.locale.subscribe(listener), () => ctx.locale.getSnapshot().active)
     const form = ctx.configForms.get<Settings>('dsh-you-should-know')
@@ -163,6 +166,92 @@ export function apply(ctx: Context): void {
     </div>
   }
 
+  const NumberSetting = (props: { id: string; label: string; value: number; minimum: number; presets: number[];
+    unit: CopyKey; language: Language; busy: boolean; save: (value: number) => void }) => {
+    const t = (key: CopyKey) => copy(props.language, key)
+    const [custom, setCustom] = useState(!props.presets.includes(props.value))
+    const [draft, setDraft] = useState(String(props.value))
+    const [invalid, setInvalid] = useState(false)
+    useEffect(() => { setDraft(String(props.value)); setInvalid(false); setCustom(!props.presets.includes(props.value)) }, [props.value])
+    const commit = () => {
+      const value = draft.trim() ? Number(draft) : NaN
+      if (!Number.isSafeInteger(value) || value < props.minimum) { setInvalid(true); return }
+      setInvalid(false)
+      if (value !== props.value) props.save(value)
+    }
+    return <div className="dshysk-number-controls">
+      <div className="dshysk-select-wrap">
+        <select id={props.id} aria-describedby={`${props.id}-description`} value={custom ? 'custom' : props.value} disabled={props.busy} onChange={event => {
+          const next = event.target.value
+          setInvalid(false)
+          setCustom(next === 'custom')
+          if (next !== 'custom') props.save(Number(next))
+        }}>
+          {props.presets.map(value => <option key={value} value={value}>{value === 0 ? t('unlimited') : `${value} ${t(props.unit)}`}</option>)}
+          <option value="custom">{t('custom')}</option>
+        </select>
+        <svg className="dshysk-select-chevron" aria-hidden="true" viewBox="0 0 16 16"><path d="m4 6 4 4 4-4" /></svg>
+      </div>
+      {custom && <input className="dshysk-number-input" type="number" inputMode="numeric" min={props.minimum} max={Number.MAX_SAFE_INTEGER} step="1"
+        aria-label={`${props.label} · ${t('custom')}`} aria-describedby={`${props.id}-description${invalid ? ` ${props.id}-error` : ''}`}
+        aria-invalid={invalid} value={draft} disabled={props.busy} onChange={event => { setDraft(event.target.value); setInvalid(false) }}
+        onBlur={commit} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }} />}
+      {invalid && <p id={`${props.id}-error`} className="dshysk-setting-description" role="alert">{t('integerError')}</p>}
+    </div>
+  }
+
+  const TopicSettings = ({ language }: { language: Language }) => {
+    const t = (key: CopyKey) => copy(language, key)
+    const id = useId()
+    const [topics, setTopics] = useState<Topics>()
+    const [busy, setBusy] = useState(true)
+    const [confirm, setConfirm] = useState<TopicList>()
+    const [message, setMessage] = useState<CopyKey | ''>('')
+    const operation = useRef<AbortController>()
+    const run = async (list?: TopicList) => {
+      const controller = new AbortController()
+      operation.current?.abort()
+      operation.current = controller
+      setBusy(true)
+      setMessage('')
+      try {
+        const result = await topicsApi(list ? { action: 'clear', list } : { action: 'read' }, controller.signal)
+        if (controller.signal.aborted) return
+        setTopics(result)
+        setConfirm(undefined)
+        setMessage(list ? 'topicsCleared' : '')
+      } catch { if (!controller.signal.aborted) setMessage('topicsError') }
+      finally { if (!controller.signal.aborted) setBusy(false) }
+    }
+    useEffect(() => { void run(); return () => operation.current?.abort() }, [])
+    return <section className="dshysk-topics" aria-labelledby={`${id}-title`}>
+      <div className="dshysk-topics-heading">
+        <h4 id={`${id}-title`}>{t('topics')}</h4>
+        <button className="dshysk-text-button" type="button" disabled={busy} onClick={() => { void run() }}>{t('refreshTopics')}</button>
+      </div>
+      <p className="dshysk-setting-description">{t('topicsHint')}</p>
+      {(['seen', 'known'] as const).map(list => <div className="dshysk-topic-group" key={list}>
+        <div className="dshysk-topic-row">
+          <details>
+            <summary>{t(list)}<span className="dshysk-topic-count">{topics?.[list].length ?? '—'}</span></summary>
+            {topics?.[list].length ? <ol className="dshysk-topic-list">{[...topics[list]].reverse().map((topic, index) => <li key={index}>{topic}</li>)}</ol>
+              : <p className="dshysk-topic-empty">{t(busy ? 'topicsLoading' : !topics && message === 'topicsError' ? 'topicsError' : 'emptyTopics')}</p>}
+          </details>
+          <button className="dshysk-text-button" type="button" aria-label={`${t('clear')} · ${t(list)}`} disabled={busy || !topics?.[list].length}
+            onClick={() => { setConfirm(list); setMessage('') }}>{t('clear')}</button>
+        </div>
+        {confirm === list && <div className="dshysk-topic-confirm" role="group" aria-label={`${t('confirmClear')} · ${t(list)}`}>
+          <p className="dshysk-setting-description">{t('clearHint')}</p>
+          <div>
+            <button className="dshysk-text-button" type="button" disabled={busy} onClick={() => { void run(list) }}>{t('confirmClear')} · {t(list)}</button>
+            <button className="dshysk-text-button" type="button" disabled={busy} onClick={() => { setConfirm(undefined) }}>{t('cancel')}</button>
+          </div>
+        </div>}
+      </div>)}
+      <p className="dshysk-settings-status" role="status">{busy ? t('topicsLoading') : message ? t(message) : ''}</p>
+    </section>
+  }
+
   const SettingsPage = () => {
     const { form, snapshot, language } = useSettings()
     const t = (key: CopyKey) => copy(language, key)
@@ -251,7 +340,20 @@ export function apply(ctx: Context): void {
             </button>
           </div>
         </div>
+        {([
+          { field: 'checkEvery', label: 'interval', hint: 'intervalHint', minimum: 1, presets: [6, 12, 18], unit: 'steps' },
+          { field: 'maxChecksPerTurn', label: 'limit', hint: 'limitHint', minimum: 0, presets: [0, 1, 3, 5], unit: 'checks' },
+        ] as const).map(setting => <div className="dshysk-setting-row" key={setting.field}>
+          <div className="dshysk-setting-copy">
+            <label className="dshysk-setting-title" htmlFor={`${id}-${setting.field}`}>{t(setting.label)}</label>
+            <p className="dshysk-setting-description" id={`${id}-${setting.field}-description`}>{t(setting.hint)}</p>
+          </div>
+          <NumberSetting id={`${id}-${setting.field}`} label={t(setting.label)} value={value[setting.field] ?? defaults[setting.field]}
+            minimum={setting.minimum} presets={[...setting.presets]} unit={setting.unit} language={language} busy={busy}
+            save={next => { void save([{ op: 'set', path: [setting.field], value: next }]) }} />
+        </div>)}
       </div>
+      <TopicSettings language={language} />
       <footer className="dshysk-settings-footer">
         <p className="dshysk-settings-usage">{t('usage')}</p>
         <p className="dshysk-settings-status" role="status">{t(message || 'autosave')}</p>

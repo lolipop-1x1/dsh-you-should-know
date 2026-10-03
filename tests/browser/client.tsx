@@ -23,6 +23,9 @@ async function fixture() {
     explanation: '**说明标题**\n只测试客户端行为。', shownAt: Date.now(), promptsSurvived: 0, expanded: true,
   }
   const requests: Record<string, unknown>[] = []
+  let topics = { seen: ['最近展示的主题。', '另一个展示主题。'], known: ['已经了解的主题。'] }
+  let topicsFail = false
+  let saveFail = false
   let actionGate: ReturnType<typeof gate> | undefined
   let pollGate: ReturnType<typeof gate> | undefined
   let holdPoll = false
@@ -30,9 +33,14 @@ async function fixture() {
   let allowInsertion = true
   let inserted = ''
   const response = () => ({ enabled: true, pollIntervalMs: 10_000, ...(view ? { view: structuredClone(view) } : {}) })
-  Object.assign(globalThis, { __DSH_TRANSPORT__: { fetch: async (_: unknown, init: RequestInit) => {
+  Object.assign(globalThis, { __DSH_TRANSPORT__: { fetch: async (input: unknown, init: RequestInit) => {
     const body = JSON.parse(init.body as string)
-    requests.push(body)
+    requests.push({ ...body, path: input })
+    if (input === '/api/you-should-know/topics') {
+      if (topicsFail) return Response.json({}, { status: 500 })
+      if (body.action === 'clear') topics = { ...topics, [body.list]: [] }
+      return Response.json(topics)
+    }
     if (body.action) {
       await actionGate?.promise
       if (body.action === 'known' || body.action === 'chat-confirm') view = undefined
@@ -46,6 +54,7 @@ async function fixture() {
     getSnapshot: () => formState,
     subscribe: listener => { formListeners.add(listener); return () => formListeners.delete(listener) },
     mutate: async operations => {
+      if (saveFail) return false
       formState = { ...formState, value: { ...formState.value } }
       for (const operation of operations) formState.value[operation.path[0]] = operation.value
       formListeners.forEach(listener => listener())
@@ -73,6 +82,31 @@ async function fixture() {
   await pause()
   return {
     requests,
+    settings: () => formState.value,
+    topics: () => structuredClone(topics),
+    failTopics: value => { topicsFail = value },
+    failSave: () => { saveFail = true },
+    preset: async (field: string, value: string) => {
+      const select = document.querySelector<HTMLSelectElement>(`#settings select[id$="-${field}"]`)!
+      select.value = value
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+      await pause(); await pause()
+    },
+    number: async (field: string, value: string) => {
+      const select = document.querySelector<HTMLSelectElement>(`#settings select[id$="-${field}"]`)!
+      const input = select.closest('.dshysk-setting-row')!.querySelector<HTMLInputElement>('input')!
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      await pause()
+      input.focus(); input.blur()
+      await pause(); await pause()
+    },
+    clickSetting: async (label: string) => {
+      const button = [...document.querySelectorAll<HTMLButtonElement>('#settings button')].find(button => (button.getAttribute('aria-label') ?? button.textContent) === label)
+      assert(button, `没有找到设置按钮：${label}`)
+      button!.click()
+      await pause(); await pause()
+    },
     language: () => document.querySelector<HTMLSelectElement>('#settings select')!,
     system: async value => { locale = { active: value }; localeListeners.forEach(listener => listener()); await pause(); await pause() },
     select: async value => {
@@ -99,6 +133,57 @@ async function fixture() {
   }
 }
 const tests: [string, (f: Awaited<ReturnType<typeof fixture>>) => Promise<void>][] = [
+  ['步长预设和自定义整数自动保存；无效值不保存', async f => {
+    await f.preset('checkEvery', '12')
+    assert(f.settings().checkEvery === 12, '预设没有保存')
+    await f.preset('checkEvery', 'custom'); await f.number('checkEvery', '8')
+    assert(f.settings().checkEvery === 8, '自定义步长没有保存')
+    for (const value of ['0', '1.5', '']) {
+      await f.number('checkEvery', value)
+      assert(f.settings().checkEvery === 8, '无效步长被保存')
+      assert(document.querySelector('[aria-invalid="true"]'), '缺少无效值提示')
+    }
+  }],
+  ['检查上限支持不限、预设和自定义；保存失败保留原配置', async f => {
+    assert(f.settings().maxChecksPerTurn === 0, '默认不是不限')
+    await f.preset('maxChecksPerTurn', '3')
+    assert(f.settings().maxChecksPerTurn === 3, '上限预设未保存')
+    await f.preset('maxChecksPerTurn', 'custom'); await f.number('maxChecksPerTurn', '7')
+    assert(f.settings().maxChecksPerTurn === 7, '自定义上限未保存')
+    await f.preset('maxChecksPerTurn', '0')
+    assert(f.settings().maxChecksPerTurn === 0, '未切回不限')
+    f.failSave(); await f.preset('maxChecksPerTurn', '1')
+    assert(f.settings().maxChecksPerTurn === 0, '失败仍改变配置')
+    assert(document.querySelector('#settings')?.textContent?.includes('设置未保存'), '缺少保存失败提示')
+  }],
+  ['主题列表展示原文；取消不清空，确认只清空所选列表', async f => {
+    const summary = document.querySelector<HTMLDetailsElement>('.dshysk-topic-row details')!
+    summary.open = true
+    assert(summary.textContent?.includes('最近展示的主题。'), '未展示主题原文')
+    await f.clickSetting('清空 · 已展示'); await f.clickSetting('取消')
+    assert(f.topics().seen.length === 2, '取消仍清空')
+    await f.clickSetting('清空 · 已展示'); await f.clickSetting('确认清空 · 已展示')
+    assert(f.topics().seen.length === 0 && f.topics().known.length === 1, '清空影响另一类记录')
+    assert(document.querySelector('.dshysk-card'), '清空移除了当前提醒')
+    await f.clickSetting('清空 · 已了解'); await f.clickSetting('确认清空 · 已了解')
+    assert(f.topics().known.length === 0, '已了解未清空')
+  }],
+  ['主题清空失败保留记录和确认入口，刷新可恢复', async f => {
+    f.failTopics(true)
+    await f.clickSetting('清空 · 已展示'); await f.clickSetting('确认清空 · 已展示')
+    assert(f.topics().seen.length === 2, '失败仍清空')
+    assert(document.querySelector('#settings')?.textContent?.includes('主题记录操作失败'), '缺少失败提示')
+    f.failTopics(false); await f.clickSetting('刷新主题记录')
+    assert(!document.querySelector('.dshysk-topic-confirm'), '刷新未关闭旧确认')
+  }],
+  ['英文窄屏菜单包含新设置且没有横向溢出', async f => {
+    await f.select('en-US')
+    const container = document.querySelector<HTMLElement>('#settings')!
+    container.style.maxWidth = '320px'
+    assert(container.textContent?.includes('Observation interval') && container.textContent?.includes('Topic history'), '英文文案缺失')
+    assert(container.scrollWidth <= container.clientWidth, '窄屏横向溢出')
+    container.style.maxWidth = ''
+  }],
   ['默认跟随系统；系统切换同步更新界面和请求语言', async f => {
     assert(f.language().value === 'auto', '默认值不是 auto')
     assert(document.querySelector('#dock')?.textContent?.includes('已了解'), '中文界面缺失')
@@ -126,7 +211,7 @@ const tests: [string, (f: Awaited<ReturnType<typeof fixture>>) => Promise<void>]
   }],
   ['已有草稿不发起带回请求，也不覆盖输入', async f => {
     await f.draft('保留用户草稿'); await f.click('带回主会话')
-    assert(!f.requests.some(request => request.action), '已有草稿仍请求带回')
+    assert(!f.requests.some(request => request.action && request.path === '/api/you-should-know'), '已有草稿仍请求带回')
     assert(!f.inserted(), '草稿被覆盖')
   }],
   ['输入在请求期间变化时 CAS 拒绝，不确认带回', async f => {
@@ -137,7 +222,7 @@ const tests: [string, (f: Awaited<ReturnType<typeof fixture>>) => Promise<void>]
   ['成功插入后才确认带回，并清除提醒', async f => {
     await f.click('带回主会话'); await pause()
     assert(f.inserted().includes('隔离测试提醒。'), '提醒没有写入输入')
-    assert(f.requests.filter(request => request.action).map(request => request.action).join(',') === 'chat,chat-confirm', '两阶段顺序错误')
+    assert(f.requests.filter(request => request.action && request.path === '/api/you-should-know').map(request => request.action).join(',') === 'chat,chat-confirm', '两阶段顺序错误')
     assert(!document.querySelector('.dshysk-card'), '确认后提醒未清除')
   }],
   ['卸载后的迟到动作不能写入输入或提交确认', async f => {

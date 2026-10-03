@@ -17,8 +17,8 @@ async function fixture(pending = false, settings: Partial<Settings> = {}) {
   ctx.provide('storageDomain', { open: async () => ({
     global: { get: () => state, set: async next => { state = structuredClone(next) } }, close,
   }) } as never)
-  let route!: (request: Request) => Promise<Response>
-  ctx.provide('connection', { fetch: { register: value => { route = value.fetch; return () => {} } } } as never)
+  const routes = new Map<string, (request: Request) => Promise<Response>>()
+  ctx.provide('connection', { fetch: { register: value => { routes.set(value.path, value.fetch); return () => routes.delete(value.path) } } } as never)
   const agents = await Promise.all(['main', 'child'].map(async id => {
     const initial = Session.create(SessionId(id))
     const session = id === 'child' ? Session.create(initial.id, [], { ...initial.header, origin: 'subagent' }) : initial
@@ -47,10 +47,11 @@ async function fixture(pending = false, settings: Partial<Settings> = {}) {
   const fiber = await ctx.plugin({ name: 'ysk-test', inject: ['llm', 'agents', 'storageDomain'],
     apply: child => apply(child, { get: () => ({ ...defaults, enabled: true, ...settings }) } as never),
   })
-  const api = async (input: unknown, headers = { 'content-type': 'application/json' }) => route(new Request('http://host/api/you-should-know', {
+  const api = async (input: unknown, headers = { 'content-type': 'application/json' }, path = '/api/you-should-know') => routes.get(path)!(new Request(`http://host${path}`, {
     method: 'POST', headers, body: typeof input === 'string' ? input : JSON.stringify(input),
   }))
   const read = async () => (await api({ sessionId: 'main' })).json()
+  const topics = async (input: unknown = { action: 'read' }) => api(input, { 'content-type': 'application/json' }, '/api/you-should-know/topics')
   const flush = async () => { await read(); await new Promise(resolve => setTimeout(resolve, 0)); await read() }
   const run = async (agent: Agent, step: number) => {
     const event = agent.session.append('step/start', { turn: 1, step })
@@ -66,10 +67,31 @@ async function fixture(pending = false, settings: Partial<Settings> = {}) {
     }) as GenerateOptions
     await ctx.agents.withInitiator(agent, async () => { for await (const _ of ctx.llm.stream(options)) {} })
   }
-  return { ctx, fiber, agents, api, read, run, requests, prompts, release, flush, close, state: () => state }
+  return { ctx, fiber, agents, api, topics, read, run, requests, prompts, release, flush, close, state: () => state }
 }
 
 describe('Host 原生事件和接口', () => {
+  it('全局主题接口不依赖当前会话；分别清空并保留当前提醒', async () => {
+    const f = await fixture()
+    expect(await (await f.topics()).json()).toEqual({ seen: [], known: [] })
+    await f.api({ sessionId: 'main', clientId: 'browser', visible: true })
+    await f.run(f.agents[0]!, 7)
+    await f.flush()
+    const view = (await f.read()).view
+    expect(await (await f.topics()).json()).toEqual({ seen: [view.line], known: [] })
+    expect(await (await f.topics({ action: 'clear', list: 'seen' })).json()).toEqual({ seen: [], known: [] })
+    expect((await f.read()).view.id).toBe(view.id)
+    await f.api({ sessionId: 'main', viewId: view.id, action: 'known' })
+    expect(await (await f.topics()).json()).toEqual({ seen: [], known: [view.line] })
+    expect(await (await f.topics({ action: 'clear', list: 'known' })).json()).toEqual({ seen: [], known: [] })
+  })
+  it.each([
+    {}, { action: 'clear' }, { action: 'clear', list: 'all' },
+    { action: 'read', list: 'seen' }, { action: 'clear', list: 'seen', extra: true },
+  ])('主题接口拒绝无效或含多余字段的操作 %j', async input => {
+    const f = await fixture()
+    expect((await f.topics(input)).status).toBe(400)
+  })
   it('主循环七步触发，旁路清除发起者，慢观察不阻塞且不递归', async () => {
     const f = await fixture(true)
     await f.api({ sessionId: 'main', clientId: 'browser', visible: true })

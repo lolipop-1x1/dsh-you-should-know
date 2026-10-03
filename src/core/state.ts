@@ -17,12 +17,18 @@ export const sessionSchema = z.object({
   id: z.string(),
   offeredTurn: z.number().optional(),
   askedTurn: z.number().optional(),
+  observationTurn: z.number().optional(),
+  observationChecks: z.number().int().nonnegative().optional(),
   view: viewSchema.optional(),
 })
 export type SessionState = z.infer<typeof sessionSchema>
-export const stateSchema = z.object({
+export const topicsSchema = z.object({
   seen: z.array(z.string()).max(50),
   known: z.array(z.string()).max(50),
+})
+export type Topics = z.infer<typeof topicsSchema>
+export type TopicList = keyof Topics
+export const stateSchema = topicsSchema.extend({
   sessions: z.array(sessionSchema).max(32),
   ignored: z.number().int().nonnegative(),
   skip: z.number().int().nonnegative(),

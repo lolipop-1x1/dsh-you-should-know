@@ -25,6 +25,10 @@ const requestSchema = z.object({
   viewId: z.string().max(128).optional(),
   action: z.enum(['expand', 'known', 'dismiss', 'helpful', 'irrelevant', 'unclear', 'chat', 'chat-confirm']).optional(),
 }).strict()
+const topicsRequestSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('read') }).strict(),
+  z.object({ action: z.literal('clear'), list: z.enum(['seen', 'known']) }).strict(),
+])
 
 class RequestError extends Error {
   constructor(message: string, readonly status = 400) { super(message) }
@@ -91,6 +95,20 @@ export async function apply(ctx: Context, config: LiveConfig): Promise<void> {
     engine.endSession(session.id)
   })
   ctx.inject(['connection'], child => {
+    child.connection.fetch.register({
+      path: '/api/you-should-know/topics', methods: ['POST'], requestBody: 'streaming',
+      fetch: async request => {
+        try {
+          const input = topicsRequestSchema.parse(await body(request))
+          const topics = input.action === 'clear' ? await engine.clearTopics(input.list) : await engine.topics()
+          return Response.json(topics, { headers: { 'cache-control': 'no-store' } })
+        } catch (error) {
+          if (error instanceof RequestError) return Response.json({ error: error.message }, { status: error.status })
+          if (error instanceof z.ZodError || error instanceof SyntaxError) return Response.json({ error: '请求字段无效。' }, { status: 400 })
+          return Response.json({ error: '无法处理主题记录请求。' }, { status: 500 })
+        }
+      },
+    })
     child.connection.fetch.register({
       path: '/api/you-should-know', methods: ['POST'], requestBody: 'streaming',
       fetch: async request => {
