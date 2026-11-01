@@ -49,10 +49,11 @@ export function apply(ctx: Context): void {
     // 面板开合：open 由触发按钮控制；source 记录因提醒自动展开还是用户手动展开。
     const [panel, setPanel] = useState<{ open: boolean; source: 'note' | 'manual'; center: boolean }>({ open: false, source: 'manual', center: true })
     const seenViewIds = useRef(new Set<string>())
+    const focusOnClose = useRef(false)
     const revision = useRef(0)
     const alive = useRef(true)
     const operations = useRef(new Set<AbortController>())
-    const trigger = useRef<HTMLButtonElement>(null)
+    const trigger = useRef<HTMLButtonElement | null>(null)
     useEffect(() => {
       alive.current = true
       revision.current += 1
@@ -148,16 +149,18 @@ export function apply(ctx: Context): void {
       }
     }, [viewId])
     useEffect(() => {
-      if (!panel.open || !panel.center) return
+      // 面板打开即拉取历史：折叠行也要显示数量，不只服务展开后的列表。
+      if (!panel.open) return
       const controller = new AbortController()
       setHistoryPhase('loading')
       historyApi(props.sessionId, controller.signal)
         .then(entries => { if (!controller.signal.aborted) { setHistory(entries); setHistoryPhase('ready') } })
         .catch(() => { if (!controller.signal.aborted) setHistoryPhase('error') })
       return () => controller.abort()
-    }, [props.sessionId, panel.open, panel.center, viewId])
+    }, [props.sessionId, panel.open, viewId])
 
     const checkNow = async () => {
+      if (state && !state.enabled) return
       if (busy || state?.checking || operations.current.size) return
       const controller = new AbortController()
       operations.current.add(controller)
@@ -188,11 +191,15 @@ export function apply(ctx: Context): void {
       if (!span || !props.inputActions.insertText(text, span)) { setMessage(t('changed')); return }
     }
     const closePanel = () => {
+      focusOnClose.current = true
       setPanel(current => ({ ...current, open: false }))
-      trigger.current?.focus()
     }
     if (!panel.open) return <div className="dshysk-anchor">
-      <button className="dshysk-trigger" type="button" ref={trigger} aria-label={t('center')} aria-expanded="false" title={t('center')}
+      <button className="dshysk-trigger" type="button" ref={element => {
+        // 收起后焦点回到触发按钮：渲染发生在 setPanel 之后，用回调 ref 补焦点。
+        trigger.current = element
+        if (element && focusOnClose.current) { focusOnClose.current = false; element.focus() }
+      }} aria-label={t('center')} aria-expanded="false" title={t('center')}
         onClick={() => setPanel({ open: true, source: 'manual', center: true })}>
         <span className="dshysk-mark" aria-hidden="true">i</span>
         {view && <span className="dshysk-dot" aria-hidden="true" />}
@@ -235,9 +242,10 @@ export function apply(ctx: Context): void {
         <div className="dshysk-center">
           {panel.center ? <div className="dshysk-center-main">
             <div className="dshysk-center-row">
-              <button className="dshysk-primary" type="button" disabled={busy || state?.checking} onClick={() => { void checkNow() }}>
+              {/* 自动观察关闭即整体禁用：手动观察与自动共用同一开关，历史仍可回看。 */}
+              {state?.enabled !== false && <button className="dshysk-primary" type="button" disabled={busy || state?.checking} onClick={() => { void checkNow() }}>
                 {state?.checking ? t('observing') : t('checkNow')}
-              </button>
+              </button>}
               {state?.manualResult && <span className="dshysk-center-note" role="status">
                 {t(state.manualResult.outcome === 'none' ? 'noneResult' : 'failedResult')}
               </span>}
@@ -268,8 +276,11 @@ export function apply(ctx: Context): void {
                 </div>}
               </div>)}
             </div>
-          </div> : <button className="dshysk-center-collapsed" type="button" onClick={() => setPanel(current => ({ ...current, center: true }))}>
-            {t('checkNow')} · {t('history')}{history?.length ? ` ${history.length}` : ''}
+          </div> : <button className="dshysk-center-collapsed" type="button" onClick={() => setPanel(current => ({
+            // 用户主动展开中心区后视为手动来源，提醒终结不再连带收起整个面板。
+            ...current, center: true, source: 'manual',
+          }))}>
+            {state?.enabled !== false && <>{t('checkNow')} · </>}{t('history')}{history?.length ? ` ${history.length}` : ''}
           </button>}
         </div>
       </aside>

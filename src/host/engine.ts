@@ -98,6 +98,7 @@ export class Engine {
     const key = JSON.stringify(settings)
     if (key !== this.settingsKey) {
       for (const id of this.jobs.keys()) this.cancel(id)
+      if (!settings.enabled) this.snapshots.clear()
       this.settingsKey = key
     }
     return settings
@@ -168,8 +169,7 @@ export class Engine {
   }
 
   capture(id: string, turn: number, step: number, snapshot: GenerateOptions): void {
-    // 快照在禁用时也捕获：手动触发不依赖自动观察开关。
-    if (this.closed || !this.visible(id)) return
+    if (this.closed || !this.sync().enabled || !this.visible(id)) return
     this.snapshots.set(id, snapshot)
     this.tails.delete(id)
     void this.enqueue(async () => {
@@ -205,12 +205,12 @@ export class Engine {
     })
   }
 
-  // 手动触发：豁免步长、每轮上限和退避；快照补上最终助手回答；禁用时仍可用。
+  // 手动触发：豁免步长、每轮上限和退避；快照补上最终助手回答。自动观察关闭时一并禁用。
   requestCheck(id: string): Promise<CheckRequest> {
     return this.enqueue(async () => {
       const settings = this.sync()
-      if (this.closed) return { accepted: false, checking: false }
-      if (this.jobs.has(id)) return { accepted: false, checking: true }
+      if (this.closed || !settings.enabled) return { accepted: false, checking: false }
+      if (this.jobs.get(id)?.purpose === 'observation') return { accepted: false, checking: true }
       const snapshot = this.snapshots.get(id)
       if (!snapshot) return { accepted: false, checking: false, unavailable: 'context' }
       const tail = this.tails.get(id) ?? []
@@ -269,10 +269,11 @@ export class Engine {
         session = { ...session, view: undefined }
         await this.put(session)
       }
-      // 禁用时手动来源的提醒仍展示：它是用户主动请求的结果。
-      const view = session.view && (settings.enabled || session.view.origin === 'manual') ? session.view : undefined
+      // 关闭自动观察后提醒一并隐藏（含手动来源），action 与 beginTurn 保持同一开关语义。
+      const view = settings.enabled && session.view ? session.view : undefined
       const manual = this.manualResults.get(id)
-      return { enabled: settings.enabled, pollIntervalMs: settings.pollIntervalMs, checking: this.jobs.has(id),
+      // checking 只统计观察任务：解释在途时不应把「立即观察」显示成「正在观察」。
+      return { enabled: settings.enabled, pollIntervalMs: settings.pollIntervalMs, checking: this.jobs.get(id)?.purpose === 'observation',
         ...(view ? { view } : {}),
         ...(manual && this.ports.now() - manual.at < MANUAL_RESULT_TTL ? { manualResult: manual } : {}) }
     })

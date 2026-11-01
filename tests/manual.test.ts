@@ -117,7 +117,7 @@ describe('手动触发观察', () => {
     const f = await fixture()
     expect(await f.engine.requestCheck('s')).toMatchObject({ accepted: false, checking: false, unavailable: 'context' })
   })
-  it('豁免退避；禁用自动观察后手动仍可用且提醒仍展示', async () => {
+  it('豁免退避；关闭自动观察后手动触发一并禁用', async () => {
     const f = await fixture(vi.fn(async () => other), { ...emptyState(), ignored: 5, skip: 16 })
     f.engine.capture('s', 1, 7, snapshot)
     await f.flush()
@@ -126,11 +126,23 @@ describe('手动触发观察', () => {
     f.engine.capture('s', 1, 13, snapshot)
     await f.flush()
     expect(f.generate).not.toHaveBeenCalled()
-    expect((await f.engine.requestCheck('s')).accepted).toBe(true)
+    expect(await f.engine.requestCheck('s')).toEqual({ accepted: false, checking: false })
+    expect(f.generate).not.toHaveBeenCalled()
+  })
+  it('禁用切换取消在途手动观察，迟到结果不写回', async () => {
+    let resolve!: (text: string) => void
+    const f = await fixture(vi.fn(() => new Promise<string>(done => { resolve = done })))
+    f.config({ checkEvery: 100 })
+    f.engine.capture('s', 1, 7, snapshot)
+    await f.engine.settled()
+    await f.engine.requestCheck('s')
+    f.config({ enabled: false })
+    resolve(other)
     await f.flush()
-    expect(f.generate).toHaveBeenCalledTimes(1)
-    expect((await f.engine.read('s')).view?.origin).toBe('manual')
-    expect(f.state().skip).toBe(15)
+    expect((await f.engine.read('s')).view).toBeUndefined()
+    f.config({ enabled: true })
+    expect((await f.engine.read('s')).view).toBeUndefined()
+    expect(f.state().sessions[0]?.view).toBeUndefined()
   })
   it('手动提醒被忽略不计连续忽略', async () => {
     const f = await fixture(vi.fn().mockResolvedValueOnce('learn: none').mockResolvedValueOnce(other))
