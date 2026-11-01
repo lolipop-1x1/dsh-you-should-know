@@ -23,7 +23,7 @@ const requestSchema = z.object({
   visible: z.boolean().optional(),
   locale: z.string().min(1).max(64).optional(),
   viewId: z.string().max(128).optional(),
-  action: z.enum(['expand', 'known', 'dismiss', 'helpful', 'irrelevant', 'unclear', 'chat', 'chat-confirm']).optional(),
+  action: z.enum(['expand', 'known', 'dismiss', 'helpful', 'irrelevant', 'unclear', 'chat', 'chat-confirm', 'check', 'history']).optional(),
 }).strict()
 const topicsRequestSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('read') }).strict(),
@@ -73,6 +73,8 @@ export async function apply(ctx: Context, config: LiveConfig): Promise<void> {
     if (event.type === 'user/message' && event.data.source.kind === 'user') {
       engine.beginTurn(id, frames.get(id)?.turn ?? 0, 1, false)
     }
+    // 组装完成的助手消息：手动触发时补进快照，让观察者看到最终回答。
+    if (event.type === 'assistant/message') engine.appendTail(id, event.data.message)
     if (event.type === 'step/start') {
       frames.set(id, event.data)
       if (event.data.step === 1) {
@@ -116,6 +118,14 @@ export async function apply(ctx: Context, config: LiveConfig): Promise<void> {
           const input = requestSchema.parse(await body(request))
           if (!ctx.agents.get(SessionId(input.sessionId))) return Response.json({ error: '会话不存在。' }, { status: 404 })
           if (input.clientId && input.visible !== undefined) engine.presenceUpdate(input.sessionId, input.clientId, input.visible, input.locale)
+          if (input.action === 'history') {
+            const history = await engine.history(input.sessionId)
+            return Response.json({ history }, { headers: { 'cache-control': 'no-store' } })
+          }
+          if (input.action === 'check') {
+            const check = await engine.requestCheck(input.sessionId)
+            return Response.json({ ...await engine.read(input.sessionId), check }, { headers: { 'cache-control': 'no-store' } })
+          }
           let accepted: boolean | undefined
           if (input.action) {
             if (!input.viewId) return Response.json({ error: '请求缺少提醒标识。' }, { status: 400 })

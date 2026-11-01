@@ -20,10 +20,13 @@ async function fixture() {
   let locale = { active: 'zh-CN' }
   let view: View | undefined = {
     id: 'test-note', kind: 'explained', line: '隔离测试提醒。', tag: 'You should know',
-    explanation: '**说明标题**\n只测试客户端行为。', shownAt: Date.now(), promptsSurvived: 0, expanded: true,
+    explanation: '**说明标题**\n只测试客户端行为。', shownAt: Date.now(), promptsSurvived: 0, expanded: true, origin: 'auto',
   }
   const requests: Record<string, unknown>[] = []
   let topics = { seen: ['最近展示的主题。', '另一个展示主题。'], known: ['已经了解的主题。'] }
+  let historyEntries = [{ id: 'h1', line: '历史提醒一。', tag: 'Heads up', shownAt: Date.now() - 3_600_000, origin: 'auto', explanation: '**历史说明**\n历史解释内容。' }]
+  let checking = false
+  let manualResult: { at: number; outcome: 'none' | 'failed' } | undefined
   let topicsFail = false
   let saveFail = false
   let actionGate: ReturnType<typeof gate> | undefined
@@ -32,7 +35,8 @@ async function fixture() {
   let draft = ''
   let allowInsertion = true
   let inserted = ''
-  const response = () => ({ enabled: true, pollIntervalMs: 10_000, ...(view ? { view: structuredClone(view) } : {}) })
+  const response = () => ({ enabled: true, pollIntervalMs: 10_000, checking,
+    ...(manualResult ? { manualResult } : {}), ...(view ? { view: structuredClone(view) } : {}) })
   Object.assign(globalThis, { __DSH_TRANSPORT__: { fetch: async (input: unknown, init: RequestInit) => {
     const body = JSON.parse(init.body as string)
     requests.push({ ...body, path: input })
@@ -40,6 +44,16 @@ async function fixture() {
       if (topicsFail) return Response.json({}, { status: 500 })
       if (body.action === 'clear') topics = { ...topics, [body.list]: [] }
       return Response.json(topics)
+    }
+    if (body.action === 'history') {
+      await actionGate?.promise
+      return Response.json({ history: historyEntries })
+    }
+    if (body.action === 'check') {
+      await actionGate?.promise
+      checking = true
+      queueMicrotask(() => { checking = false; manualResult = { at: Date.now(), outcome: 'none' } })
+      return Response.json({ ...response(), check: { accepted: true, checking: true } })
     }
     if (body.action) {
       await actionGate?.promise
@@ -125,6 +139,8 @@ async function fixture() {
     releaseAction: async () => { actionGate?.release(); await pause(); await pause() },
     holdPoll: async () => { holdPoll = true; pollGate = gate(); document.dispatchEvent(new Event('visibilitychange')); await pause() },
     releasePoll: async () => { holdPoll = false; pollGate?.release(); await pause(); await pause() },
+    refresh: async () => { document.dispatchEvent(new Event('visibilitychange')); await pause(); await pause() },
+    setView: async (next?: View) => { view = next; await document.dispatchEvent(new Event('visibilitychange')); await pause(); await pause() },
     draft: async value => { draft = value; render(); await pause() },
     denyInsertion: () => { allowInsertion = false },
     inserted: () => inserted,
@@ -229,6 +245,48 @@ const tests: [string, (f: Awaited<ReturnType<typeof fixture>>) => Promise<void>]
     f.holdAction(); await f.click('带回主会话'); f.unmount(); await f.releaseAction()
     assert(!f.inserted(), '卸载后仍插入输入')
     assert(!f.requests.some(request => request.action === 'chat-confirm'), '卸载后仍确认带回')
+  }],
+  ['无提醒时常驻按钮仍在，打开面板展示立即观察与历史', async f => {
+    await f.setView(undefined)
+    const trigger = document.querySelector<HTMLButtonElement>('.dshysk-trigger')
+    assert(trigger, '缺少常驻触发按钮')
+    assert(!document.querySelector('.dshysk-card'), '无提醒时面板不应打开')
+    trigger!.click()
+    await pause(); await pause()
+    const card = document.querySelector('.dshysk-card')
+    assert(card, '点击触发按钮没有打开面板')
+    assert(card!.textContent!.includes('立即观察'), '缺少立即观察入口')
+    assert(card!.textContent!.includes('历史提醒一。'), '缺少历史条目')
+    const bring = document.querySelector('.dshysk-history-detail button')
+    assert(!bring, '历史条目未展开就显示带回按钮')
+  }],
+  ['新提醒自动展开且中心区折叠；提醒终结后面板收起', async f => {
+    assert(document.querySelector('.dshysk-card'), '新提醒没有自动展开面板')
+    assert(document.querySelector('.dshysk-center-collapsed'), '中心区没有折叠为一行')
+    assert(document.querySelector('.dshysk-dot') === null, '面板打开时触发按钮不应存在')
+    await f.setView(undefined)
+    assert(!document.querySelector('.dshysk-card'), '提醒终结面板未收起')
+    assert(document.querySelector('.dshysk-trigger'), '收起后缺少常驻按钮')
+  }],
+  ['手动展开中心区：立即观察发起请求并显示回执', async f => {
+    document.querySelector<HTMLButtonElement>('.dshysk-center-collapsed')!.click()
+    await pause(); await pause()
+    await f.click('立即观察')
+    assert(f.requests.some(request => request.action === 'check'), '没有发起手动观察请求')
+    await f.refresh()
+    const card = document.querySelector('.dshysk-card')!
+    assert(card.textContent!.includes('本次没有发现'), '缺少没有发现的回执')
+  }],
+  ['历史条目可展开解释并带回主会话', async f => {
+    document.querySelector<HTMLButtonElement>('.dshysk-center-collapsed')!.click()
+    await pause(); await pause()
+    document.querySelector<HTMLButtonElement>('.dshysk-history-line')!.click()
+    await pause(); await pause()
+    const detail = document.querySelector('.dshysk-history-detail')
+    assert(detail?.textContent?.includes('历史解释内容。'), '缺少历史解释')
+    detail!.querySelector<HTMLButtonElement>('button')!.click()
+    await pause()
+    assert(f.inserted().includes('历史提醒一。'), '历史条目未写入输入')
   }],
 ]
 let preview: Awaited<ReturnType<typeof fixture>> | undefined

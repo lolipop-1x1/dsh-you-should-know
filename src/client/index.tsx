@@ -12,9 +12,9 @@ import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ClientTransportHooks } from '@deepseek-ai/dsh-client-connection/client'
 import { parseExplanation } from '../core/parser.js'
 import { defaults, languageOf, type Language, type Settings } from '../core/config.js'
-import type { TopicList, Topics } from '../core/state.js'
+import type { HistoryEntry, TopicList, Topics } from '../core/state.js'
 import { copy, type CopyKey } from './i18n.js'
-import { createApi, createTopicsApi, type Fetch, type ResponseState } from './api.js'
+import { createApi, createHistoryApi, createTopicsApi, type Fetch, type ResponseState } from './api.js'
 import { styles } from './styles.js'
 
 export const inject = ['slots', 'locale', 'configForms', 'remote', 'remote.session']
@@ -25,6 +25,7 @@ export function apply(ctx: Context): void {
     ? globals.__DSH_TRANSPORT__.fetch(input, init ?? {}) : fetch(input, init)
   const api = createApi(fetcher)
   const topicsApi = createTopicsApi(fetcher)
+  const historyApi = createHistoryApi(fetcher)
   const useSettings = () => {
     const locale = useSyncExternalStore(listener => ctx.locale.subscribe(listener), () => ctx.locale.getSnapshot().active)
     const form = ctx.configForms.get<Settings>('dsh-you-should-know')
@@ -42,18 +43,27 @@ export function apply(ctx: Context): void {
     const [state, setState] = useState<ResponseState>()
     const [message, setMessage] = useState('')
     const [busy, setBusy] = useState(false)
-    const [collapsedId, setCollapsedId] = useState<string>()
-    const focusOnReopen = useRef(false)
+    const [history, setHistory] = useState<HistoryEntry[]>()
+    const [historyPhase, setHistoryPhase] = useState<'loading' | 'error' | 'ready'>('loading')
+    const [historyOpenId, setHistoryOpenId] = useState<string>()
+    // 面板开合：open 由触发按钮控制；source 记录因提醒自动展开还是用户手动展开。
+    const [panel, setPanel] = useState<{ open: boolean; source: 'note' | 'manual'; center: boolean }>({ open: false, source: 'manual', center: true })
+    const seenViewIds = useRef(new Set<string>())
     const revision = useRef(0)
     const alive = useRef(true)
     const operations = useRef(new Set<AbortController>())
+    const trigger = useRef<HTMLButtonElement>(null)
     useEffect(() => {
       alive.current = true
       revision.current += 1
       setState(undefined)
       setMessage('')
       setBusy(false)
-      setCollapsedId(undefined)
+      setHistory(undefined)
+      setHistoryPhase('loading')
+      setHistoryOpenId(undefined)
+      setPanel({ open: false, source: 'manual', center: true })
+      seenViewIds.current = new Set()
       const clientId = crypto.randomUUID()
       const controller = new AbortController()
       let timer: ReturnType<typeof setTimeout> | undefined
@@ -124,45 +134,145 @@ export function apply(ctx: Context): void {
         }
       }
     }
-    const view = state?.enabled ? state.view : undefined
-    if (!view) return null
-    const label = t(view.tag === 'Heads up' ? 'heads' : 'know')
+    // host 已按开关与来源过滤：禁用时仅手动来源的提醒会到达。
+    const view = state?.view
+    const viewId = view?.id
+    useEffect(() => {
+      if (viewId) {
+        if (seenViewIds.current.has(viewId)) return
+        seenViewIds.current.add(viewId)
+        setPanel(current => current.open ? current : { open: true, source: 'note', center: false })
+      } else {
+        // 因提醒自动展开的面板随提醒终结收起；手动展开的保持，仅提醒区消失。
+        setPanel(current => current.source === 'note' ? { ...current, open: false } : current)
+      }
+    }, [viewId])
+    useEffect(() => {
+      if (!panel.open || !panel.center) return
+      const controller = new AbortController()
+      setHistoryPhase('loading')
+      historyApi(props.sessionId, controller.signal)
+        .then(entries => { if (!controller.signal.aborted) { setHistory(entries); setHistoryPhase('ready') } })
+        .catch(() => { if (!controller.signal.aborted) setHistoryPhase('error') })
+      return () => controller.abort()
+    }, [props.sessionId, panel.open, panel.center, viewId])
+
+    const checkNow = async () => {
+      if (busy || state?.checking || operations.current.size) return
+      const controller = new AbortController()
+      operations.current.add(controller)
+      const current = ++revision.current
+      setMessage('')
+      try {
+        const next = await api({ sessionId: props.sessionId, action: 'check' }, controller.signal)
+        if (!alive.current || revision.current !== current || controller.signal.aborted) return
+        if (next.check?.unavailable === 'context') { setMessage(t('noContext')); return }
+        if (next.check && !next.check.accepted && !next.check.checking) { setMessage(t('error')); return }
+        setState(next)
+      } catch {
+        if (alive.current && revision.current === current && !controller.signal.aborted) setMessage(t('error'))
+      } finally {
+        operations.current.delete(controller)
+        if (alive.current && revision.current === current) {
+          // 观察在途状态由轮询的 checking 字段接管。
+          revision.current += 1
+        }
+      }
+    }
+    const bring = async (entry: HistoryEntry) => {
+      if (busy || operations.current.size) return
+      if (draft.trim() || hasAttachments || inputPhase !== 'plain') { setMessage(t('draft')); return }
+      const span = props.inputActions.captureInsertion()
+      const note = `${entry.tag} · ${entry.line}\n\n${entry.explanation ?? ''}`
+      const text = `${t('discuss')}\n\n${note.split('\n').map(line => `> ${line}`).join('\n')}\n\n`
+      if (!span || !props.inputActions.insertText(text, span)) { setMessage(t('changed')); return }
+    }
+    const closePanel = () => {
+      setPanel(current => ({ ...current, open: false }))
+      trigger.current?.focus()
+    }
+    if (!panel.open) return <div className="dshysk-anchor">
+      <button className="dshysk-trigger" type="button" ref={trigger} aria-label={t('center')} aria-expanded="false" title={t('center')}
+        onClick={() => setPanel({ open: true, source: 'manual', center: true })}>
+        <span className="dshysk-mark" aria-hidden="true">i</span>
+        {view && <span className="dshysk-dot" aria-hidden="true" />}
+      </button>
+    </div>
+    const label = view ? t(view.tag === 'Heads up' ? 'heads' : 'know') : t('center')
     const button = (key: CopyKey, action: string, primary = false) => <button className={primary ? 'dshysk-primary' : undefined} type="button" disabled={busy} onClick={() => { void act(action) }}>{t(key)}</button>
     return <div className="dshysk-anchor">
-      {collapsedId === view.id ? <button className="dshysk-trigger" type="button" autoFocus aria-label={t('open')} aria-expanded="false" onClick={() => { focusOnReopen.current = true; setCollapsedId(undefined) }}>
-        <span className="dshysk-mark" aria-hidden="true">i</span>{label}<span aria-hidden="true">↑</span>
-      </button> : <aside className="dshysk-card" aria-label="You Should Know" onKeyDown={event => {
-        if (event.key === 'Escape') { event.stopPropagation(); setCollapsedId(view.id) }
+      <aside className="dshysk-card" aria-label="You Should Know" onKeyDown={event => {
+        if (event.key === 'Escape') { event.stopPropagation(); closePanel() }
       }}>
         <div className="dshysk-header">
           <div className="dshysk-label"><span className="dshysk-mark" aria-hidden="true">i</span>{label}</div>
-          <button className="dshysk-collapse" type="button" aria-label={t('collapse')} title={t('collapse')} ref={element => {
-            if (element && focusOnReopen.current) { focusOnReopen.current = false; element.focus() }
-          }} onClick={() => { setCollapsedId(view.id) }}>
+          <button className="dshysk-collapse" type="button" aria-label={t('collapse')} title={t('collapse')} onClick={closePanel}>
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
           </button>
         </div>
-        <div className="dshysk-content">
-          <p className="dshysk-summary" aria-live="polite">{view.line}</p>
-          {view.kind === 'explaining' && <p role="status">{t('waiting')}</p>}
-          {view.kind === 'failed' && <p role="status">{t('failed')}</p>}
-          {view.kind === 'explained' && <div className="dshysk-explanation">{parseExplanation(view.explanation ?? '').map((block, index) =>
-            <section key={index}>
-              {block.title && <h4>{block.title}</h4>}
-              {block.lead && <p>{block.lead}</p>}
-              {block.sketch.length > 0 && <pre>{block.sketch.join('\n')}</pre>}
-              {block.caption && <p>{block.caption}</p>}
-            </section>)}</div>}
-        </div>
-        <div className="dshysk-actions">
-          {view.kind === 'offer' && <>{button('learn', 'expand', true)}{button('knew', 'known')}{button('dismiss', 'dismiss')}</>}
-          {view.kind === 'explained' && <>{button('understood', 'known', true)}{button('chat', 'chat')}{button('dismiss', 'dismiss')}</>}
-          {view.kind === 'failed' && <>{button('retry', 'expand', true)}{button('dismiss', 'dismiss')}</>}
-          {view.kind === 'explaining' && button('dismiss', 'dismiss')}
-          {view.kind === 'asked' && <><span>{t('feedback')}</span>{button('helpful', 'helpful')}{!view.expanded && button('irrelevant', 'irrelevant')}{button('unclear', 'unclear')}</>}
-        </div>
+        {view && <>
+          <div className="dshysk-content">
+            <p className="dshysk-summary" aria-live="polite">{view.line}</p>
+            {view.kind === 'explaining' && <p role="status">{t('waiting')}</p>}
+            {view.kind === 'failed' && <p role="status">{t('failed')}</p>}
+            {view.kind === 'explained' && <div className="dshysk-explanation">{parseExplanation(view.explanation ?? '').map((block, index) =>
+              <section key={index}>
+                {block.title && <h4>{block.title}</h4>}
+                {block.lead && <p>{block.lead}</p>}
+                {block.sketch.length > 0 && <pre>{block.sketch.join('\n')}</pre>}
+                {block.caption && <p>{block.caption}</p>}
+              </section>)}</div>}
+          </div>
+          <div className="dshysk-actions">
+            {view.kind === 'offer' && <>{button('learn', 'expand', true)}{button('knew', 'known')}{button('dismiss', 'dismiss')}</>}
+            {view.kind === 'explained' && <>{button('understood', 'known', true)}{button('chat', 'chat')}{button('dismiss', 'dismiss')}</>}
+            {view.kind === 'failed' && <>{button('retry', 'expand', true)}{button('dismiss', 'dismiss')}</>}
+            {view.kind === 'explaining' && button('dismiss', 'dismiss')}
+            {view.kind === 'asked' && <><span>{t('feedback')}</span>{button('helpful', 'helpful')}{!view.expanded && button('irrelevant', 'irrelevant')}{button('unclear', 'unclear')}</>}
+          </div>
+        </>}
         {message && <p className="dshysk-status" role="status">{message}</p>}
-      </aside>}
+        <div className="dshysk-center">
+          {panel.center ? <div className="dshysk-center-main">
+            <div className="dshysk-center-row">
+              <button className="dshysk-primary" type="button" disabled={busy || state?.checking} onClick={() => { void checkNow() }}>
+                {state?.checking ? t('observing') : t('checkNow')}
+              </button>
+              {state?.manualResult && <span className="dshysk-center-note" role="status">
+                {t(state.manualResult.outcome === 'none' ? 'noneResult' : 'failedResult')}
+              </span>}
+            </div>
+            <div className="dshysk-history">
+              <div className="dshysk-history-heading">{t('history')}</div>
+              {historyPhase === 'loading' && <p role="status">{t('historyLoading')}</p>}
+              {historyPhase === 'error' && <p role="status">{t('historyError')}</p>}
+              {historyPhase === 'ready' && !history?.length && <p>{t('emptyHistory')}</p>}
+              {historyPhase === 'ready' && history?.map(entry => <div className="dshysk-history-item" key={entry.id}>
+                <button className="dshysk-history-line" type="button" aria-expanded={historyOpenId === entry.id}
+                  onClick={() => setHistoryOpenId(historyOpenId === entry.id ? undefined : entry.id)}>
+                  <span className="dshysk-history-meta">{new Date(entry.shownAt).toLocaleTimeString()}</span>
+                  <span className="dshysk-history-tag">{entry.tag === 'Heads up' ? t('heads') : t('know')}</span>
+                  <span className="dshysk-history-text">{entry.line}</span>
+                </button>
+                {historyOpenId === entry.id && <div className="dshysk-history-detail">
+                  {entry.explanation && <div className="dshysk-explanation">{parseExplanation(entry.explanation).map((block, index) =>
+                    <section key={index}>
+                      {block.title && <h4>{block.title}</h4>}
+                      {block.lead && <p>{block.lead}</p>}
+                      {block.sketch.length > 0 && <pre>{block.sketch.join('\n')}</pre>}
+                      {block.caption && <p>{block.caption}</p>}
+                    </section>)}</div>}
+                  <div className="dshysk-actions">
+                    <button type="button" onClick={() => { void bring(entry) }}>{t('chat')}</button>
+                  </div>
+                </div>}
+              </div>)}
+            </div>
+          </div> : <button className="dshysk-center-collapsed" type="button" onClick={() => setPanel(current => ({ ...current, center: true }))}>
+            {t('checkNow')} · {t('history')}{history?.length ? ` ${history.length}` : ''}
+          </button>}
+        </div>
+      </aside>
     </div>
   }
 

@@ -25,6 +25,11 @@ const zh = {
   clearHint: '仅清空这类记录，保留另一类记录和当前提醒。',
   emptyTopics: '暂无主题记录', topicsLoading: '正在加载主题记录…', topicsError: '主题记录操作失败，请重试。',
   topicsCleared: '所选主题记录已清空。', refreshTopics: '刷新主题记录',
+  center: '提醒中心', checkNow: '立即观察', observing: '正在观察…',
+  noContext: '暂无可观察的上下文，主会话执行一步后可再试。',
+  noneResult: '本次没有发现值得提醒的事项。', failedResult: '观察没有产生可用结果，请稍后重试。',
+  history: '本会话提醒', emptyHistory: '本会话还没有提醒。',
+  historyLoading: '正在加载提醒历史…', historyError: '提醒历史加载失败，请重试。',
 } as const
 const en: Record<keyof typeof zh, string> = {
   learn: 'Learn more', knew: 'Knew this already', dismiss: 'Dismiss', understood: 'Understood', chat: 'Chat in main session',
@@ -53,6 +58,11 @@ const en: Record<keyof typeof zh, string> = {
   clearHint: 'Clear only this list. Keep the other list and the current note.',
   emptyTopics: 'No topics yet', topicsLoading: 'Loading topic history…', topicsError: 'Topic history could not be updated. Please retry.',
   topicsCleared: 'The selected topic list was cleared.', refreshTopics: 'Refresh topic history',
+  center: 'Note center', checkNow: 'Check now', observing: 'Observing…',
+  noContext: 'Nothing to observe yet. Let the main session run a step, then retry.',
+  noneResult: 'No noteworthy item found this time.', failedResult: 'Observation did not produce a usable result. Please retry later.',
+  history: 'Session notes', emptyHistory: 'No notes in this session yet.',
+  historyLoading: 'Loading note history…', historyError: 'Note history could not be loaded. Please retry.',
 }
 export type CopyKey = keyof typeof zh
 export const copy = (locale: string, key: CopyKey): string => /^zh(?:-|$)/iu.test(locale) ? zh[key] : en[key]
