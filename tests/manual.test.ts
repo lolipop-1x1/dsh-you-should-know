@@ -184,4 +184,23 @@ describe('手动触发观察', () => {
     f.engine.appendTail('s', assistant('没有快照时的回答'))
     expect(await f.engine.requestCheck('s')).toMatchObject({ unavailable: 'context' })
   })
+  it('客户端离开后快照保留，切回会话即可手动观察', async () => {
+    const f = await fixture()
+    f.engine.capture('s', 1, 7, snapshot)
+    await f.flush()
+    // 模拟切换会话：Card 卸载上报不可见，原逻辑会立即删除快照。
+    f.engine.presenceUpdate('s', 'browser', false)
+    f.engine.presenceUpdate('s', 'browser', true)
+    expect((await f.engine.requestCheck('s')).accepted).toBe(true)
+  })
+  it('后台执行的轮次也捕获快照，但不发起自动检查', async () => {
+    const f = await fixture(vi.fn(async () => other))
+    // 没有任何可见客户端时主会话流式执行。
+    f.engine.presenceUpdate('s', 'browser', false)
+    f.engine.capture('s', 1, 7, snapshot)
+    await f.flush()
+    expect(f.generate).not.toHaveBeenCalled()
+    f.engine.presenceUpdate('s', 'browser', true)
+    expect((await f.engine.requestCheck('s')).accepted).toBe(true)
+  })
 })

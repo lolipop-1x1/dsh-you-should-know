@@ -120,8 +120,8 @@ export class Engine {
     if (previous !== this.language(id)) this.cancel(id)
     if (clients.size) return true
     this.presence.delete(id)
-    this.snapshots.delete(id)
-    this.tails.delete(id)
+    // 快照与会话视图解绑：客户端离开只停检查，不丢已捕获的请求快照，
+    // 否则切回会话后手动触发始终回执无可观察上下文。
     return false
   }
 
@@ -135,10 +135,7 @@ export class Engine {
     if (clients.size) this.presence.set(id, clients)
     else this.presence.delete(id)
     if (previous !== this.language(id)) this.cancel(id)
-    if (!visible && !this.visible(id)) {
-      this.cancel(id)
-      this.snapshots.delete(id)
-    }
+    if (!visible && !this.visible(id)) this.cancel(id)
     this.sync()
   }
 
@@ -169,7 +166,9 @@ export class Engine {
   }
 
   capture(id: string, turn: number, step: number, snapshot: GenerateOptions): void {
-    if (this.closed || !this.sync().enabled || !this.visible(id)) return
+    // 快照只要主会话在流就捕获，不要求当前有可见客户端：后台执行的轮次
+    // 也应支持切回后手动观察。检查机会的可见性门槛在下方入队逻辑里。
+    if (this.closed || !this.sync().enabled) return
     this.snapshots.set(id, snapshot)
     this.tails.delete(id)
     void this.enqueue(async () => {
