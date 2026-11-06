@@ -2,9 +2,10 @@ export const styles = `
 .dshysk-anchor {
   position: relative;
   height: 0;
-  width: calc(100% - 24px);
+  width: calc(100% - var(--dsh-composer-side-clearance, 16px) * 2);
   max-width: var(--dsh-composer-card-max-width, 712px);
   margin-inline: auto;
+  container-type: inline-size;
   z-index: 8;
   font: inherit;
   --dshysk-accent: var(--dsw-alias-brand-primary-new-colorprimary-new-color, #5686fe);
@@ -106,7 +107,10 @@ export const styles = `
 }
 .dshysk-card button:disabled { opacity: .5; cursor: wait; }
 .dshysk-card .dshysk-status { margin-top: 10px; font-size: 12px; opacity: .7; }
-.dshysk-trigger { gap: 0; left: auto; right: 0; border-radius: 20px; padding: 5px; line-height: 18px; }
+.dshysk-trigger { gap: 0; left: -38px; right: auto; top: 8px; bottom: auto; border-radius: 20px; padding: 5px; line-height: 18px; }
+@container (max-width: 560px) {
+  .dshysk-trigger { left: -14px; }
+}
 .dshysk-trigger .dshysk-dot {
   position: absolute;
   top: -2px;

@@ -59,7 +59,7 @@ A prebuilt package does not need a source build during installation. When instal
 
 Automatic observation is **enabled by default**, and the observer follows the main session model. Existing saved settings are preserved. Start a task normally; short tasks usually do not reach a check, and a note is not guaranteed on every turn.
 
-A persistent button above the input opens the note center: **Check now** runs an observation on demand (bypassing interval, per-turn limits, and backoff; the observation includes the main session's latest finished answer), and **Session notes** lists this session's past notes (up to 20; opening one reuses its stored explanation without a model call, and you can bring it back to the main session). When nothing is worth surfacing, the panel says so explicitly.
+A persistent button at the input's top-left corner opens the note center: **Check now** runs an observation on demand (bypassing interval, per-turn limits, and backoff; the observation includes the main session's latest finished answer), and **Session notes** lists this session's past notes (up to 20; opening one reuses its stored explanation without a model call, and you can bring it back to the main session). When nothing is worth surfacing, the panel says so explicitly.
 
 | Action | Result |
 | --- | --- |
