@@ -54,6 +54,7 @@ export function apply(ctx: Context): void {
     const alive = useRef(true)
     const operations = useRef(new Set<AbortController>())
     const trigger = useRef<HTMLButtonElement | null>(null)
+    const cardId = useId()
     useEffect(() => {
       alive.current = true
       revision.current += 1
@@ -194,21 +195,24 @@ export function apply(ctx: Context): void {
       focusOnClose.current = true
       setPanel(current => ({ ...current, open: false }))
     }
-    if (!panel.open) return <div className="dshysk-anchor">
+    const togglePanel = () => {
+      setPanel(current => current.open
+        ? { ...current, open: false }
+        : { open: true, source: 'manual', center: true })
+    }
+    const label = view ? t(view.tag === 'Heads up' ? 'heads' : 'know') : t('center')
+    const button = (key: CopyKey, action: string, primary = false) => <button className={primary ? 'dshysk-primary' : undefined} type="button" disabled={busy} onClick={() => { void act(action) }}>{t(key)}</button>
+    return <div className="dshysk-anchor">
       <button className="dshysk-trigger" type="button" ref={element => {
         // 收起后焦点回到触发按钮：渲染发生在 setPanel 之后，用回调 ref 补焦点。
         trigger.current = element
         if (element && focusOnClose.current) { focusOnClose.current = false; element.focus() }
-      }} aria-label={t('center')} aria-expanded="false" title={t('center')}
-        onClick={() => setPanel({ open: true, source: 'manual', center: true })}>
+      }} aria-label={t('center')} aria-expanded={panel.open} aria-controls={panel.open ? cardId : undefined} title={t('center')}
+        onClick={togglePanel}>
         <span className="dshysk-mark" aria-hidden="true">i</span>
         {view && <span className="dshysk-dot" aria-hidden="true" />}
       </button>
-    </div>
-    const label = view ? t(view.tag === 'Heads up' ? 'heads' : 'know') : t('center')
-    const button = (key: CopyKey, action: string, primary = false) => <button className={primary ? 'dshysk-primary' : undefined} type="button" disabled={busy} onClick={() => { void act(action) }}>{t(key)}</button>
-    return <div className="dshysk-anchor">
-      <aside className="dshysk-card" aria-label="You Should Know" onKeyDown={event => {
+      {panel.open && <aside id={cardId} className="dshysk-card" aria-label="You Should Know" onKeyDown={event => {
         if (event.key === 'Escape') { event.stopPropagation(); closePanel() }
       }}>
         <div className="dshysk-header">
@@ -283,7 +287,7 @@ export function apply(ctx: Context): void {
             {state?.enabled !== false && <>{t('checkNow')} · </>}{t('history')}{history?.length ? ` ${history.length}` : ''}
           </button>}
         </div>
-      </aside>
+      </aside>}
     </div>
   }
 

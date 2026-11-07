@@ -9,7 +9,7 @@
 
 A task reminder plugin for DeepSeek Harness. It observes the existing conversation while a task is running and surfaces important facts, trade-offs, and background knowledge you may have missed.
 
-- **Brief notes**: a floating panel above the input that does not push the conversation upward, with a persistent button to reopen it.
+- **Brief notes**: a floating panel above the input that does not push the conversation upward, with a persistent button to toggle it.
 - **On demand**: open the note center any time to check the conversation now or review this session's past notes.
 - **Explanations on demand**: learn why a note matters, or mark a familiar topic as understood.
 - **Continue the discussion**: bring the note and explanation into the main session without overwriting drafts or attachments. You decide whether to send it.
@@ -59,7 +59,7 @@ A prebuilt package does not need a source build during installation. When instal
 
 Automatic observation is **enabled by default**, and the observer follows the main session model. Existing saved settings are preserved. Start a task normally; short tasks usually do not reach a check, and a note is not guaranteed on every turn.
 
-A persistent button at the input's top-left corner opens the note center: **Check now** runs an observation on demand (bypassing interval, per-turn limits, and backoff; the observation includes the main session's latest finished answer), and **Session notes** lists this session's past notes (up to 20; opening one reuses its stored explanation without a model call, and you can bring it back to the main session). When nothing is worth surfacing, the panel says so explicitly.
+A persistent button at the input's top-left corner opens the note center and closes it again when clicked a second time: **Check now** runs an observation on demand (bypassing interval, per-turn limits, and backoff; the observation includes the main session's latest finished answer), and **Session notes** lists this session's past notes (up to 20; opening one reuses its stored explanation without a model call, and you can bring it back to the main session). When nothing is worth surfacing, the panel says so explicitly.
 
 | Action | Result |
 | --- | --- |

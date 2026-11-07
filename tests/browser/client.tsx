@@ -265,10 +265,26 @@ const tests: [string, (f: Awaited<ReturnType<typeof fixture>>) => Promise<void>]
   ['新提醒自动展开且中心区折叠；提醒终结后面板收起', async f => {
     assert(document.querySelector('.dshysk-card'), '新提醒没有自动展开面板')
     assert(document.querySelector('.dshysk-center-collapsed'), '中心区没有折叠为一行')
-    assert(document.querySelector('.dshysk-dot') === null, '面板打开时触发按钮不应存在')
+    const trigger = document.querySelector<HTMLButtonElement>('.dshysk-trigger')
+    assert(trigger, '面板打开时缺少常驻按钮')
+    assert(trigger!.getAttribute('aria-expanded') === 'true', '面板打开时常驻按钮未标记展开')
+    assert(document.querySelector('.dshysk-dot'), '面板打开时提示点不应消失')
     await f.setView(undefined)
     assert(!document.querySelector('.dshysk-card'), '提醒终结面板未收起')
     assert(document.querySelector('.dshysk-trigger'), '收起后缺少常驻按钮')
+  }],
+  ['常驻按钮再次点击收起面板，再次点击重新打开', async f => {
+    assert(document.querySelector('.dshysk-card'), '初始提醒面板未自动打开')
+    const trigger = document.querySelector<HTMLButtonElement>('.dshysk-trigger')
+    assert(trigger, '面板打开时缺少常驻按钮')
+    trigger!.click()
+    await pause(); await pause()
+    assert(!document.querySelector('.dshysk-card'), '再次点击常驻按钮未收起面板')
+    assert(trigger!.getAttribute('aria-expanded') === 'false', '收起后 aria-expanded 未更新')
+    trigger!.click()
+    await pause(); await pause()
+    assert(document.querySelector('.dshysk-card'), '再次点击常驻按钮未重新打开面板')
+    assert(trigger!.getAttribute('aria-expanded') === 'true', '展开后 aria-expanded 未更新')
   }],
   ['手动展开中心区：立即观察发起请求并显示回执', async f => {
     document.querySelector<HTMLButtonElement>('.dshysk-center-collapsed')!.click()

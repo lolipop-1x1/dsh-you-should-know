@@ -24,6 +24,7 @@ export const styles = `
 }
 .dshysk-card {
   width: min(560px, 100%);
+  left: -38px;
   border-radius: 14px;
   padding: 14px 16px 12px;
   font-size: 14px;
@@ -109,7 +110,7 @@ export const styles = `
 .dshysk-card .dshysk-status { margin-top: 10px; font-size: 12px; opacity: .7; }
 .dshysk-trigger { gap: 0; left: -38px; right: auto; top: 8px; bottom: auto; border-radius: 20px; padding: 5px; line-height: 18px; }
 @container (max-width: 560px) {
-  .dshysk-trigger { left: -14px; }
+  .dshysk-trigger, .dshysk-card { left: -14px; }
 }
 .dshysk-trigger .dshysk-dot {
   position: absolute;
