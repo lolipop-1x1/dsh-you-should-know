@@ -17,7 +17,7 @@ export interface Ports {
 }
 export type Action = 'expand' | 'known' | 'dismiss' | 'helpful' | 'irrelevant' | 'unclear' | 'chat' | 'chat-confirm'
 export type ManualResult = { at: number; outcome: 'none' | 'failed' }
-export interface CheckRequest { accepted: boolean; checking: boolean; unavailable?: 'context' }
+export interface CheckRequest { accepted: boolean; checking: boolean; unavailable?: 'context' | 'busy' }
 interface Job { controller: AbortController; done: Promise<void>; token: string; language: Language; purpose: 'observation' | 'explanation' }
 const TAIL_LIMIT = 8
 const MANUAL_RESULT_TTL = 600_000
@@ -209,7 +209,12 @@ export class Engine {
     return this.enqueue(async () => {
       const settings = this.sync()
       if (this.closed || !settings.enabled) return { accepted: false, checking: false }
-      if (this.jobs.get(id)?.purpose === 'observation') return { accepted: false, checking: true }
+      const job = this.jobs.get(id)
+      if (job) return {
+        accepted: false,
+        checking: job.purpose === 'observation',
+        ...(job.purpose === 'explanation' ? { unavailable: 'busy' as const } : {}),
+      }
       const snapshot = this.snapshots.get(id)
       if (!snapshot) return { accepted: false, checking: false, unavailable: 'context' }
       const tail = this.tails.get(id) ?? []
@@ -240,6 +245,8 @@ export class Engine {
 
   private start(id: string, snapshot: GenerateOptions, prompt: string, settings: Settings,
     purpose: Job['purpose'], accept: (text: string) => Promise<void>, failure?: () => Promise<void>): void {
+    // 同一会话只允许一个旁路任务；调用方先检查，这里兜底防止覆盖在途任务。
+    if (this.jobs.has(id)) return
     const job: Job = { controller: new AbortController(), token: this.settingsKey, language: this.language(id, settings), purpose, done: Promise.resolve() }
     this.jobs.set(id, job)
     job.done = abortable(job.controller.signal, () => this.ports.generate(snapshot, prompt, settings, job.controller.signal)).then(text => this.enqueue(async () => {
@@ -271,8 +278,10 @@ export class Engine {
       // 关闭自动观察后提醒一并隐藏（含手动来源），action 与 beginTurn 保持同一开关语义。
       const view = settings.enabled && session.view ? session.view : undefined
       const manual = this.manualResults.get(id)
+      const job = this.jobs.get(id)
       // checking 只统计观察任务：解释在途时不应把「立即观察」显示成「正在观察」。
-      return { enabled: settings.enabled, pollIntervalMs: settings.pollIntervalMs, checking: this.jobs.get(id)?.purpose === 'observation',
+      return { enabled: settings.enabled, pollIntervalMs: settings.pollIntervalMs, checking: job?.purpose === 'observation',
+        ...(job ? { job: job.purpose } : {}),
         ...(view ? { view } : {}),
         ...(manual && this.ports.now() - manual.at < MANUAL_RESULT_TTL ? { manualResult: manual } : {}) }
     })
@@ -309,6 +318,7 @@ export class Engine {
       }
       if (action === 'expand') {
         if (view.kind !== 'offer' && view.kind !== 'failed') return false
+        if (this.jobs.has(id)) return false
         const language = this.language(id, settings)
         if (view.explanation && (!view.language || view.language === language) && parseExplanation(view.explanation).length) {
           await this.put({ ...session, view: { ...view, kind: 'explained', expanded: true } })

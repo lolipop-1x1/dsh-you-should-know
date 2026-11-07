@@ -26,6 +26,7 @@ async function fixture() {
   let topics = { seen: ['最近展示的主题。', '另一个展示主题。'], known: ['已经了解的主题。'] }
   let historyEntries = [{ id: 'h1', line: '历史提醒一。', tag: 'Heads up', shownAt: Date.now() - 3_600_000, origin: 'auto', explanation: '**历史说明**\n历史解释内容。' }]
   let checking = false
+  let job: 'observation' | 'explanation' | undefined
   let enabled = true
   let manualResult: { at: number; outcome: 'none' | 'failed' } | undefined
   let topicsFail = false
@@ -37,7 +38,7 @@ async function fixture() {
   let allowInsertion = true
   let inserted = ''
   const response = () => ({ enabled, pollIntervalMs: 10_000, checking,
-    ...(manualResult ? { manualResult } : {}), ...(view ? { view: structuredClone(view) } : {}) })
+    ...(job ? { job } : {}), ...(manualResult ? { manualResult } : {}), ...(view ? { view: structuredClone(view) } : {}) })
   Object.assign(globalThis, { __DSH_TRANSPORT__: { fetch: async (input: unknown, init: RequestInit) => {
     const body = JSON.parse(init.body as string)
     requests.push({ ...body, path: input })
@@ -141,6 +142,7 @@ async function fixture() {
     holdPoll: async () => { holdPoll = true; pollGate = gate(); document.dispatchEvent(new Event('visibilitychange')); await pause() },
     releasePoll: async () => { holdPoll = false; pollGate?.release(); await pause(); await pause() },
     refresh: async () => { document.dispatchEvent(new Event('visibilitychange')); await pause(); await pause() },
+    setJob: async (next: 'observation' | 'explanation' | undefined) => { job = next; document.dispatchEvent(new Event('visibilitychange')); await pause(); await pause() },
     setView: async (next?: View) => { view = next; await document.dispatchEvent(new Event('visibilitychange')); await pause(); await pause() },
     disable: async (value: boolean) => { enabled = !value; if (!enabled) view = undefined; await document.dispatchEvent(new Event("visibilitychange")); await pause(); await pause() },
     draft: async value => { draft = value; render(); await pause() },
@@ -261,6 +263,23 @@ const tests: [string, (f: Awaited<ReturnType<typeof fixture>>) => Promise<void>]
     assert(card!.textContent!.includes('历史提醒一。'), '缺少历史条目')
     const bring = document.querySelector('.dshysk-history-detail button')
     assert(!bring, '历史条目未展开就显示带回按钮')
+  }],
+  ['解释生成中禁用立即观察', async f => {
+    document.querySelector<HTMLButtonElement>('.dshysk-center-collapsed')!.click()
+    await pause(); await pause()
+    await f.setJob('explanation')
+    const check = [...document.querySelectorAll<HTMLButtonElement>('.dshysk-center-row button')]
+      .find(button => button.textContent === '立即观察')
+    assert(check, '缺少立即观察按钮')
+    assert(check!.disabled, '解释生成中仍可立即观察')
+  }],
+  ['观察进行中禁用展开解释', async f => {
+    await f.setView({ id: 'offer-test', kind: 'offer', line: '观察中的提醒。', tag: 'Heads up', shownAt: Date.now(), promptsSurvived: 0, expanded: false, origin: 'auto' })
+    await f.setJob('observation')
+    const expand = [...document.querySelectorAll<HTMLButtonElement>('.dshysk-actions button')]
+      .find(button => button.textContent === '展开解释')
+    assert(expand, '缺少展开解释按钮')
+    assert(expand!.disabled, '观察进行中仍可展开解释')
   }],
   ['新提醒自动展开且中心区折叠；提醒终结后面板收起', async f => {
     assert(document.querySelector('.dshysk-card'), '新提醒没有自动展开面板')

@@ -4,8 +4,9 @@ export const responseSchema = z.object({
   enabled: z.boolean(), pollIntervalMs: z.number().min(500).max(10_000),
   view: viewSchema.optional(), accepted: z.boolean().optional(),
   checking: z.boolean().optional(),
+  job: z.enum(['observation', 'explanation']).optional(),
   manualResult: z.object({ at: z.number(), outcome: z.enum(['none', 'failed']) }).optional(),
-  check: z.object({ accepted: z.boolean(), checking: z.boolean(), unavailable: z.enum(['context']).optional() }).optional(),
+  check: z.object({ accepted: z.boolean(), checking: z.boolean(), unavailable: z.enum(['context', 'busy']).optional() }).optional(),
 })
 export type ResponseState = z.infer<typeof responseSchema>
 export type Fetch = (input: string | URL, init?: RequestInit) => Promise<Response>

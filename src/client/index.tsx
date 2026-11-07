@@ -107,6 +107,7 @@ export function apply(ctx: Context): void {
     const act = async (action: string) => {
       const view = state?.view
       if (!view || busy || operations.current.size) return
+      if (action === 'expand' && (state?.job || state?.checking)) { setMessage(t('busy')); return }
       if (action === 'chat' && (draft.trim() || hasAttachments || inputPhase !== 'plain')) { setMessage(t('draft')); return }
       const span = action === 'chat' ? props.inputActions.captureInsertion() : undefined
       const controller = new AbortController()
@@ -117,7 +118,7 @@ export function apply(ctx: Context): void {
       try {
         let next = await api({ sessionId: props.sessionId, viewId: view.id, action }, controller.signal)
         if (!alive.current || revision.current !== current || controller.signal.aborted) return
-        if (next.accepted !== true) { setMessage(t('stale')); return }
+        if (next.accepted !== true) { setState(next); setMessage(t(next.job ? 'busy' : 'stale')); return }
         if (action === 'chat') {
           const note = `${view.tag} · ${view.line}\n\n${view.explanation ?? ''}`
           const text = `${t('discuss')}\n\n${note.split('\n').map(line => `> ${line}`).join('\n')}\n\n`
@@ -162,7 +163,7 @@ export function apply(ctx: Context): void {
 
     const checkNow = async () => {
       if (state && !state.enabled) return
-      if (busy || state?.checking || operations.current.size) return
+      if (busy || state?.checking || state?.job || operations.current.size) return
       const controller = new AbortController()
       operations.current.add(controller)
       const current = ++revision.current
@@ -171,6 +172,7 @@ export function apply(ctx: Context): void {
         const next = await api({ sessionId: props.sessionId, action: 'check' }, controller.signal)
         if (!alive.current || revision.current !== current || controller.signal.aborted) return
         if (next.check?.unavailable === 'context') { setMessage(t('noContext')); return }
+        if (next.check?.unavailable === 'busy') { setState(next); setMessage(t('busy')); return }
         if (next.check && !next.check.accepted && !next.check.checking) { setMessage(t('error')); return }
         setState(next)
       } catch {
@@ -201,7 +203,9 @@ export function apply(ctx: Context): void {
         : { open: true, source: 'manual', center: true })
     }
     const label = view ? t(view.tag === 'Heads up' ? 'heads' : 'know') : t('center')
-    const button = (key: CopyKey, action: string, primary = false) => <button className={primary ? 'dshysk-primary' : undefined} type="button" disabled={busy} onClick={() => { void act(action) }}>{t(key)}</button>
+    const button = (key: CopyKey, action: string, primary = false) => <button className={primary ? 'dshysk-primary' : undefined} type="button"
+      disabled={busy || (action === 'expand' && (state?.job !== undefined || state?.checking === true))}
+      onClick={() => { void act(action) }}>{t(key)}</button>
     return <div className="dshysk-anchor">
       <button className="dshysk-trigger" type="button" ref={element => {
         // 收起后焦点回到触发按钮：渲染发生在 setPanel 之后，用回调 ref 补焦点。
@@ -247,7 +251,7 @@ export function apply(ctx: Context): void {
           {panel.center ? <div className="dshysk-center-main">
             <div className="dshysk-center-row">
               {/* 自动观察关闭即整体禁用：手动观察与自动共用同一开关，历史仍可回看。 */}
-              {state?.enabled !== false && <button className="dshysk-primary" type="button" disabled={busy || state?.checking} onClick={() => { void checkNow() }}>
+              {state?.enabled !== false && <button className="dshysk-primary" type="button" disabled={busy || state?.checking || state?.job === 'explanation'} onClick={() => { void checkNow() }}>
                 {state?.checking ? t('observing') : t('checkNow')}
               </button>}
               {state?.manualResult && <span className="dshysk-center-note" role="status">
