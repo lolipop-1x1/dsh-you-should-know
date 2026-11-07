@@ -9,7 +9,8 @@
 
 A task reminder plugin for DeepSeek Harness. It observes the existing conversation while a task is running and surfaces important facts, trade-offs, and background knowledge you may have missed.
 
-- **Brief notes**: a floating panel above the input, with a minimize control, that does not push the conversation upward.
+- **Brief notes**: a floating panel above the input that does not push the conversation upward, with a persistent button to toggle it.
+- **On demand**: open the note center any time to check the conversation now or review this session's past notes.
 - **Explanations on demand**: learn why a note matters, or mark a familiar topic as understood.
 - **Continue the discussion**: bring the note and explanation into the main session without overwriting drafts or attachments. You decide whether to send it.
 - **Your settings**: choose the language, observer model, check frequency, and per-turn limit; manage topic history across sessions.
@@ -58,13 +59,16 @@ A prebuilt package does not need a source build during installation. When instal
 
 Automatic observation is **enabled by default**, and the observer follows the main session model. Existing saved settings are preserved. Start a task normally; short tasks usually do not reach a check, and a note is not guaranteed on every turn.
 
+A persistent button at the input's top-left corner opens the note center and closes it again when clicked a second time: **Check now** runs an observation on demand (bypassing interval, per-turn limits, and backoff; the observation includes the main session's latest finished answer), and **Session notes** lists this session's past notes (up to 20; opening one reuses its stored explanation without a model call, and you can bring it back to the main session). When nothing is worth surfacing, the panel says so explicitly.
+
 | Action | Result |
 | --- | --- |
 | Learn more | View the reason and impact; reuse an existing explanation in the same language when available |
 | Knew this already / Understood | Save the topic to reduce repeated notes |
 | Chat in main session | Insert the note and explanation only when there is no draft or attachment; you send it |
 | Dismiss | Close the note and briefly offer feedback options |
-| Minimize / Open note | Change the panel display without submitting feedback or marking the topic as understood |
+| Check now | Start an observation on demand; same judgment bar as automatic checks, with an explicit panel receipt |
+| Session notes | Review this session's past notes and explanations; bring one back to the main session |
 
 Notes help you understand a task. They are not fact checks or execution reviews: they may miss important details or be inaccurate. Bring a note into the main session when you want to discuss it further.
 
@@ -74,7 +78,7 @@ Open **Settings → You Should Know**. Changes save automatically.
 
 | Setting | Default | Options |
 | --- | --- | --- |
-| Automatic observation | Enabled | Enabled, disabled |
+| Automatic observation | Enabled | Enabled, disabled; disabling also stops Check now, while session notes stay readable |
 | Language | Follow system | Follow system, 中文, English |
 | Observer model | Follow the main session model | Independently select a model configured in Harness |
 | Observation interval | 6 model steps | 6, 12, 18, or a custom positive integer |
@@ -97,7 +101,7 @@ Both topic lists are shared across sessions and help avoid repeated notes. Clear
 1. **Capture context**: obtain a full request snapshot at the main session's model-request extension point, including the system prompt, user messages, assistant responses, existing tool calls and results, and tool definitions.
 2. **Check at intervals**: by default, steps 7, 13, 19, and so on are eligible in each turn. One model step may include several tool calls; individual tool calls do not count as steps. The step count restarts on a new turn.
 3. **Observe independently**: copy the main request and append an observer prompt as the final user message, including reminder rules and Seen and Known topics. Observation runs in the background while the main task continues.
-4. **Show notes selectively**: stay quiet when there is nothing worth surfacing. Show at most one note per turn, which you can expand, respond to, or bring into the main session.
+4. **Show notes selectively**: automatic observation stays quiet when there is nothing worth surfacing. Show at most one note per turn, which you can expand, respond to, or bring into the main session. A manual check always gives an explicit receipt, even when it finds nothing.
 
 The observer reads existing context. It does not execute tools, read new files, or write observation requests and responses into the main conversation. Following the main model preserves the request prefix so the provider can attempt cache reuse; actual cache hits and pricing depend on the provider.
 
@@ -114,7 +118,7 @@ The observer reads existing context. It does not execute tools, read new files, 
 
 ## Usage and data
 
-**Automatic observation makes extra model calls, even when no note appears.** The plugin currently uses full conversation context without trimming or an extra summarization call. Disable observation, increase the interval, or set a per-turn limit to control extra calls. Expanding a note makes a separate model request when no usable explanation exists. Cancellation does not guarantee that remote billing stops.
+**Automatic observation makes extra model calls, even when no note appears.** The plugin currently uses full conversation context without trimming or an extra summarization call. Disable observation, increase the interval, or set a per-turn limit to control extra calls. Each Check now is also a full-context model call and is not limited by the per-turn cap. Expanding a note makes a separate model request when no usable explanation exists; opening a history entry does not. Cancellation does not guarantee that remote billing stops.
 
 Requests use the model services already configured in Harness. When you select an independent observer model, full context is sent to that model's provider. The plugin does not store its own API keys, add telemetry, or upload feedback externally.
 

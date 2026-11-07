@@ -3,7 +3,7 @@ const zh = {
   helpful: '有帮助', irrelevant: '不相关', unclear: '未理解', waiting: '正在生成解释…',
   failed: '解释生成失败。', retry: '重试', draft: '请先发送或清空现有输入及附件。',
   changed: '输入已经变化，提醒未写入。', stale: '这条提醒已经变化，请重新选择。',
-  error: '操作失败，请稍后重试。', feedback: '这条提醒对你有帮助吗？',
+  busy: '另一项任务正在进行，请稍候。', error: '操作失败，请稍后重试。', feedback: '这条提醒对你有帮助吗？',
   enabled: '自动观察', follow: '跟随主会话模型', model: '观察模型', loading: '正在加载设置…',
   unavailable: '当前连接无法保存此设置。', saved: '设置已保存。', settingsError: '设置未保存，请重试。',
   usage: '自动观察会额外调用模型；即使没有展示提醒，也可能产生用量。默认使用完整会话上下文。',
@@ -25,13 +25,18 @@ const zh = {
   clearHint: '仅清空这类记录，保留另一类记录和当前提醒。',
   emptyTopics: '暂无主题记录', topicsLoading: '正在加载主题记录…', topicsError: '主题记录操作失败，请重试。',
   topicsCleared: '所选主题记录已清空。', refreshTopics: '刷新主题记录',
+  center: '提醒中心', checkNow: '立即观察', observing: '正在观察…',
+  noContext: '暂无可观察的上下文，主会话执行一步后可再试。',
+  noneResult: '本次没有发现值得提醒的事项。', failedResult: '观察没有产生可用结果，请稍后重试。',
+  history: '本会话提醒', emptyHistory: '本会话还没有提醒。',
+  historyLoading: '正在加载提醒历史…', historyError: '提醒历史加载失败，请重试。',
 } as const
 const en: Record<keyof typeof zh, string> = {
   learn: 'Learn more', knew: 'Knew this already', dismiss: 'Dismiss', understood: 'Understood', chat: 'Chat in main session',
   helpful: 'That was helpful', irrelevant: 'Not relevant', unclear: "Didn't understand", waiting: 'Writing an explanation…',
   failed: 'The explanation could not be generated.', retry: 'Retry', draft: 'Send or clear the existing draft and attachments first.',
   changed: 'The draft changed. The note was not inserted.', stale: 'This note changed. Select it again.',
-  error: 'The action failed. Please retry.', feedback: 'Was this note helpful?',
+  busy: 'Another task is still running. Please wait.', error: 'The action failed. Please retry.', feedback: 'Was this note helpful?',
   enabled: 'Automatic observation', follow: 'Follow the main session model', model: 'Observer model', loading: 'Loading settings…',
   unavailable: 'This connection cannot save this setting.', saved: 'Settings saved.', settingsError: 'Settings were not saved. Please retry.',
   usage: 'Observation makes extra model calls, including when no note is shown. Full conversation context is used by default.',
@@ -53,6 +58,11 @@ const en: Record<keyof typeof zh, string> = {
   clearHint: 'Clear only this list. Keep the other list and the current note.',
   emptyTopics: 'No topics yet', topicsLoading: 'Loading topic history…', topicsError: 'Topic history could not be updated. Please retry.',
   topicsCleared: 'The selected topic list was cleared.', refreshTopics: 'Refresh topic history',
+  center: 'Note center', checkNow: 'Check now', observing: 'Observing…',
+  noContext: 'Nothing to observe yet. Let the main session run a step, then retry.',
+  noneResult: 'No noteworthy item found this time.', failedResult: 'Observation did not produce a usable result. Please retry later.',
+  history: 'Session notes', emptyHistory: 'No notes in this session yet.',
+  historyLoading: 'Loading note history…', historyError: 'Note history could not be loaded. Please retry.',
 }
 export type CopyKey = keyof typeof zh
 export const copy = (locale: string, key: CopyKey): string => /^zh(?:-|$)/iu.test(locale) ? zh[key] : en[key]

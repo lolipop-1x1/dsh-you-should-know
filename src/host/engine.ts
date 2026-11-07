@@ -1,9 +1,12 @@
 import { randomUUID } from 'node:crypto'
-import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
+import type { AssistantMessage, GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { languageOf, type Language, type Settings } from '../core/config.js'
 import { parseExplanation, parseProposal } from '../core/parser.js'
 import { explanationPrompt, observerPrompt } from '../core/prompts.js'
-import { addTopic, backoff, replaceSession, type SessionState, type State, type TopicList, type Topics, type View } from '../core/state.js'
+import {
+  addTopic, appendHistory, backoff, historyExplanation, replaceSession,
+  type HistoryEntry, type SessionState, type State, type TopicList, type Topics, type View,
+} from '../core/state.js'
 
 export interface Ports {
   settings(): Settings
@@ -13,7 +16,11 @@ export interface Ports {
   error(error: unknown): void
 }
 export type Action = 'expand' | 'known' | 'dismiss' | 'helpful' | 'irrelevant' | 'unclear' | 'chat' | 'chat-confirm'
+export type ManualResult = { at: number; outcome: 'none' | 'failed' }
+export interface CheckRequest { accepted: boolean; checking: boolean; unavailable?: 'context' | 'busy' }
 interface Job { controller: AbortController; done: Promise<void>; token: string; language: Language; purpose: 'observation' | 'explanation' }
+const TAIL_LIMIT = 8
+const MANUAL_RESULT_TTL = 600_000
 
 // 卸载不等待忽略取消信号的适配器；迟到响应仍有拒绝处理，不能写入状态。
 function abortable(signal: AbortSignal, run: () => Promise<string>): Promise<string> {
@@ -30,6 +37,9 @@ export class Engine {
   private tail: Promise<void> = Promise.resolve()
   private jobs = new Map<string, Job>()
   private snapshots = new Map<string, GenerateOptions>()
+  // 快照之后产生的助手消息：手动触发时补进快照，新快照捕获时清空。
+  private tails = new Map<string, AssistantMessage[]>()
+  private manualResults = new Map<string, ManualResult>()
   private presence = new Map<string, Map<string, { time: number; locale?: string }>>()
   private feedback = new Map<string, ReturnType<typeof setTimeout>>()
   private settingsKey: string
@@ -52,7 +62,7 @@ export class Engine {
     this.state = next
   }
   private session(id: string): SessionState {
-    return this.state.sessions.find(session => session.id === id) ?? { id }
+    return this.state.sessions.find(session => session.id === id) ?? { id, history: [] }
   }
   private async put(session: SessionState): Promise<void> {
     await this.commit(replaceSession(this.state, session, this.ports.now()))
@@ -93,6 +103,14 @@ export class Engine {
     }
     return settings
   }
+  // 仅缓存仍有快照的会话：无快照时补全无从附着，等待下一次捕获重建。
+  appendTail(id: string, message: AssistantMessage): void {
+    if (this.closed) return
+    if (!this.snapshots.has(id)) return
+    const tail = this.tails.get(id) ?? []
+    tail.push(message)
+    this.tails.set(id, tail.slice(-TAIL_LIMIT))
+  }
   private visible(id: string): boolean {
     const lease = this.ports.settings().presenceLeaseMs
     const clients = this.presence.get(id)
@@ -102,7 +120,8 @@ export class Engine {
     if (previous !== this.language(id)) this.cancel(id)
     if (clients.size) return true
     this.presence.delete(id)
-    this.snapshots.delete(id)
+    // 快照与会话视图解绑：客户端离开只停检查，不丢已捕获的请求快照，
+    // 否则切回会话后手动触发始终回执无可观察上下文。
     return false
   }
 
@@ -116,10 +135,7 @@ export class Engine {
     if (clients.size) this.presence.set(id, clients)
     else this.presence.delete(id)
     if (previous !== this.language(id)) this.cancel(id)
-    if (!visible && !this.visible(id)) {
-      this.cancel(id)
-      this.snapshots.delete(id)
-    }
+    if (!visible && !this.visible(id)) this.cancel(id)
     this.sync()
   }
 
@@ -135,8 +151,12 @@ export class Engine {
       } else if ((view?.kind === 'offer' || view?.kind === 'explained') && inputCount > 0) {
         const promptsSurvived = view.promptsSurvived + inputCount
         if (view.kind === 'offer' && promptsSurvived >= 2) {
-          const ignored = this.state.ignored + 1
-          await this.commit(replaceSession({ ...this.state, ignored, skip: backoff(ignored) }, { ...session, view: undefined }, this.ports.now()))
+          // 手动来源的提醒被忽略不计退避：用户自己请求的结果，忽略不表示嫌吵。
+          if (view.origin === 'manual') await this.put({ ...session, view: undefined })
+          else {
+            const ignored = this.state.ignored + 1
+            await this.commit(replaceSession({ ...this.state, ignored, skip: backoff(ignored) }, { ...session, view: undefined }, this.ports.now()))
+          }
           return
         } else session = { ...session, view: { ...view, promptsSurvived } }
       } else return
@@ -146,8 +166,11 @@ export class Engine {
   }
 
   capture(id: string, turn: number, step: number, snapshot: GenerateOptions): void {
-    if (this.closed || !this.sync().enabled || !this.visible(id)) return
+    // 快照只要主会话在流就捕获，不要求当前有可见客户端：后台执行的轮次
+    // 也应支持切回后手动观察。检查机会的可见性门槛在下方入队逻辑里。
+    if (this.closed || !this.sync().enabled) return
     this.snapshots.set(id, snapshot)
+    this.tails.delete(id)
     void this.enqueue(async () => {
       const settings = this.sync()
       const index = step - 1
@@ -173,17 +196,57 @@ export class Engine {
         const normalized = proposal.line.toLowerCase().replace(/\.+$/u, '')
         if ([...this.state.seen, ...this.state.known].some(line => line.toLowerCase().replace(/\.+$/u, '') === normalized)) return
         const next = { ...this.state, seen: addTopic(this.state.seen, proposal.line, true) }
-        await this.commit(replaceSession(next, {
-          ...current, offeredTurn: turn,
-          view: { id: randomUUID(), kind: 'offer', line: proposal.line, tag: proposal.tag,
-            explanation: proposal.explanation, shownAt: this.ports.now(), promptsSurvived: 0, expanded: false, language },
-        }, this.ports.now()))
+        const view: View = { id: randomUUID(), kind: 'offer', line: proposal.line, tag: proposal.tag,
+          explanation: proposal.explanation, shownAt: this.ports.now(), promptsSurvived: 0, expanded: false, language, origin: 'auto' }
+        await this.commit(replaceSession(next,
+          appendHistory({ ...current, offeredTurn: turn, view }, view), this.ports.now()))
       })
+    })
+  }
+
+  // 手动触发：豁免步长、每轮上限和退避；快照补上最终助手回答。自动观察关闭时一并禁用。
+  requestCheck(id: string): Promise<CheckRequest> {
+    return this.enqueue(async () => {
+      const settings = this.sync()
+      if (this.closed || !settings.enabled) return { accepted: false, checking: false }
+      const job = this.jobs.get(id)
+      if (job) return {
+        accepted: false,
+        checking: job.purpose === 'observation',
+        ...(job.purpose === 'explanation' ? { unavailable: 'busy' as const } : {}),
+      }
+      const snapshot = this.snapshots.get(id)
+      if (!snapshot) return { accepted: false, checking: false, unavailable: 'context' }
+      const tail = this.tails.get(id) ?? []
+      const full: GenerateOptions = tail.length ? { ...snapshot, messages: [...snapshot.messages, ...tail] } : snapshot
+      const language = this.language(id, settings)
+      const report = (outcome: ManualResult['outcome']) => this.manualResults.set(id, { at: this.ports.now(), outcome })
+      this.start(id, full, observerPrompt(this.state.seen, this.state.known, language), settings, 'observation', async text => {
+        this.manualResults.delete(id)
+        const proposal = parseProposal(text)
+        const current = this.session(id)
+        if (proposal.kind !== 'line') { report(proposal.kind === 'none' ? 'none' : 'failed'); return }
+        const normalized = proposal.line.toLowerCase().replace(/\.+$/u, '')
+        if ([...this.state.seen, ...this.state.known].some(line => line.toLowerCase().replace(/\.+$/u, '') === normalized)) {
+          report('none')
+          return
+        }
+        const view: View = { id: randomUUID(), kind: 'offer', line: proposal.line, tag: proposal.tag,
+          explanation: proposal.explanation, shownAt: this.ports.now(), promptsSurvived: 0, expanded: false, language, origin: 'manual' }
+        // 直接替换已有提醒：旧提醒已在历史中，不与每轮一条的自动上限耦合。
+        const next = { ...this.state, seen: addTopic(this.state.seen, proposal.line, true) }
+        await this.commit(replaceSession(next, appendHistory({ ...current, view }, view), this.ports.now()))
+      }, async () => {
+        report('failed')
+      })
+      return { accepted: true, checking: true }
     })
   }
 
   private start(id: string, snapshot: GenerateOptions, prompt: string, settings: Settings,
     purpose: Job['purpose'], accept: (text: string) => Promise<void>, failure?: () => Promise<void>): void {
+    // 同一会话只允许一个旁路任务；调用方先检查，这里兜底防止覆盖在途任务。
+    if (this.jobs.has(id)) return
     const job: Job = { controller: new AbortController(), token: this.settingsKey, language: this.language(id, settings), purpose, done: Promise.resolve() }
     this.jobs.set(id, job)
     job.done = abortable(job.controller.signal, () => this.ports.generate(snapshot, prompt, settings, job.controller.signal)).then(text => this.enqueue(async () => {
@@ -199,7 +262,7 @@ export class Engine {
     })).finally(() => { if (this.jobs.get(id) === job) this.jobs.delete(id) }).catch(error => this.ports.error(error))
   }
 
-  read(id: string): Promise<{ enabled: boolean; pollIntervalMs: number; view?: View }> {
+  read(id: string): Promise<{ enabled: boolean; pollIntervalMs: number; checking: boolean; view?: View; manualResult?: ManualResult }> {
     return this.enqueue(async () => {
       const settings = this.sync()
       let session = this.session(id)
@@ -212,9 +275,20 @@ export class Engine {
         session = { ...session, view: undefined }
         await this.put(session)
       }
-      return { enabled: settings.enabled, pollIntervalMs: settings.pollIntervalMs,
-        ...(settings.enabled && session.view ? { view: session.view } : {}) }
+      // 关闭自动观察后提醒一并隐藏（含手动来源），action 与 beginTurn 保持同一开关语义。
+      const view = settings.enabled && session.view ? session.view : undefined
+      const manual = this.manualResults.get(id)
+      const job = this.jobs.get(id)
+      // checking 只统计观察任务：解释在途时不应把「立即观察」显示成「正在观察」。
+      return { enabled: settings.enabled, pollIntervalMs: settings.pollIntervalMs, checking: job?.purpose === 'observation',
+        ...(job ? { job: job.purpose } : {}),
+        ...(view ? { view } : {}),
+        ...(manual && this.ports.now() - manual.at < MANUAL_RESULT_TTL ? { manualResult: manual } : {}) }
     })
+  }
+
+  history(id: string): Promise<HistoryEntry[]> {
+    return this.enqueue(async () => [...(this.session(id).history ?? [])].reverse())
   }
 
   topics(): Promise<Topics> {
@@ -244,6 +318,7 @@ export class Engine {
       }
       if (action === 'expand') {
         if (view.kind !== 'offer' && view.kind !== 'failed') return false
+        if (this.jobs.has(id)) return false
         const language = this.language(id, settings)
         if (view.explanation && (!view.language || view.language === language) && parseExplanation(view.explanation).length) {
           await this.put({ ...session, view: { ...view, kind: 'explained', expanded: true } })
@@ -254,7 +329,7 @@ export class Engine {
           this.start(id, snapshot, explanationPrompt(view.line, language), settings, 'explanation', async text => {
             if (!parseExplanation(text).length) throw new Error('观察模型没有提供可用解释。')
             const current = this.session(id)
-            if (current.view?.id === viewId) await this.put({ ...current, view: { ...view, kind: 'explained', explanation: text, expanded: true, language } })
+            if (current.view?.id === viewId) await this.put(historyExplanation({ ...current, view: { ...view, kind: 'explained', explanation: text, expanded: true, language } }, viewId, text))
           }, async () => {
             const current = this.session(id)
             if (current.view?.id === viewId) await this.put({ ...current, view: { ...view, kind: 'failed', expanded: true } })
@@ -288,6 +363,8 @@ export class Engine {
     this.cancel(id)
     this.clearFeedback(id)
     this.snapshots.delete(id)
+    this.tails.delete(id)
+    this.manualResults.delete(id)
     this.presence.delete(id)
     void this.enqueue(async () => {
       if (this.closed) return
@@ -307,6 +384,8 @@ export class Engine {
     await Promise.allSettled(jobs.map(job => job.done))
     await this.tail
     this.snapshots.clear()
+    this.tails.clear()
+    this.manualResults.clear()
     this.presence.clear()
   }
 }

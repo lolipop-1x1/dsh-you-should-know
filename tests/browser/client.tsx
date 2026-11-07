@@ -20,10 +20,15 @@ async function fixture() {
   let locale = { active: 'zh-CN' }
   let view: View | undefined = {
     id: 'test-note', kind: 'explained', line: '隔离测试提醒。', tag: 'You should know',
-    explanation: '**说明标题**\n只测试客户端行为。', shownAt: Date.now(), promptsSurvived: 0, expanded: true,
+    explanation: '**说明标题**\n只测试客户端行为。', shownAt: Date.now(), promptsSurvived: 0, expanded: true, origin: 'auto',
   }
   const requests: Record<string, unknown>[] = []
   let topics = { seen: ['最近展示的主题。', '另一个展示主题。'], known: ['已经了解的主题。'] }
+  let historyEntries = [{ id: 'h1', line: '历史提醒一。', tag: 'Heads up', shownAt: Date.now() - 3_600_000, origin: 'auto', explanation: '**历史说明**\n历史解释内容。' }]
+  let checking = false
+  let job: 'observation' | 'explanation' | undefined
+  let enabled = true
+  let manualResult: { at: number; outcome: 'none' | 'failed' } | undefined
   let topicsFail = false
   let saveFail = false
   let actionGate: ReturnType<typeof gate> | undefined
@@ -32,7 +37,8 @@ async function fixture() {
   let draft = ''
   let allowInsertion = true
   let inserted = ''
-  const response = () => ({ enabled: true, pollIntervalMs: 10_000, ...(view ? { view: structuredClone(view) } : {}) })
+  const response = () => ({ enabled, pollIntervalMs: 10_000, checking,
+    ...(job ? { job } : {}), ...(manualResult ? { manualResult } : {}), ...(view ? { view: structuredClone(view) } : {}) })
   Object.assign(globalThis, { __DSH_TRANSPORT__: { fetch: async (input: unknown, init: RequestInit) => {
     const body = JSON.parse(init.body as string)
     requests.push({ ...body, path: input })
@@ -40,6 +46,16 @@ async function fixture() {
       if (topicsFail) return Response.json({}, { status: 500 })
       if (body.action === 'clear') topics = { ...topics, [body.list]: [] }
       return Response.json(topics)
+    }
+    if (body.action === 'history') {
+      await actionGate?.promise
+      return Response.json({ history: historyEntries })
+    }
+    if (body.action === 'check') {
+      await actionGate?.promise
+      checking = true
+      queueMicrotask(() => { checking = false; manualResult = { at: Date.now(), outcome: 'none' } })
+      return Response.json({ ...response(), check: { accepted: true, checking: true } })
     }
     if (body.action) {
       await actionGate?.promise
@@ -125,6 +141,10 @@ async function fixture() {
     releaseAction: async () => { actionGate?.release(); await pause(); await pause() },
     holdPoll: async () => { holdPoll = true; pollGate = gate(); document.dispatchEvent(new Event('visibilitychange')); await pause() },
     releasePoll: async () => { holdPoll = false; pollGate?.release(); await pause(); await pause() },
+    refresh: async () => { document.dispatchEvent(new Event('visibilitychange')); await pause(); await pause() },
+    setJob: async (next: 'observation' | 'explanation' | undefined) => { job = next; document.dispatchEvent(new Event('visibilitychange')); await pause(); await pause() },
+    setView: async (next?: View) => { view = next; await document.dispatchEvent(new Event('visibilitychange')); await pause(); await pause() },
+    disable: async (value: boolean) => { enabled = !value; if (!enabled) view = undefined; await document.dispatchEvent(new Event("visibilitychange")); await pause(); await pause() },
     draft: async value => { draft = value; render(); await pause() },
     denyInsertion: () => { allowInsertion = false },
     inserted: () => inserted,
@@ -189,13 +209,13 @@ const tests: [string, (f: Awaited<ReturnType<typeof fixture>>) => Promise<void>]
     assert(document.querySelector('#dock')?.textContent?.includes('已了解'), '中文界面缺失')
     await f.system('en-US')
     assert(document.querySelector('#dock')?.textContent?.includes('Understood'), '没有跟随英文系统')
-    assert(f.requests.at(-1)?.locale === 'en-US', '没有传递英文语言')
+    assert(f.requests.filter(request => request.locale).at(-1)?.locale === 'en-US', '没有传递英文语言')
   }],
   ['手动中文覆盖英文系统并保存设置', async f => {
     await f.system('en-US'); await f.select('zh-CN')
     assert(f.language().value === 'zh-CN', '中文设置未保存')
     assert(document.querySelector('#dock')?.textContent?.includes('已了解'), '没有切到中文')
-    assert(f.requests.at(-1)?.locale === 'zh-CN', '请求语言未同步')
+    assert(f.requests.filter(request => request.locale).at(-1)?.locale === 'zh-CN', '请求语言未同步')
   }],
   ['手动英文覆盖中文系统；切回 auto 恢复中文', async f => {
     await f.select('en-US')
@@ -211,7 +231,7 @@ const tests: [string, (f: Awaited<ReturnType<typeof fixture>>) => Promise<void>]
   }],
   ['已有草稿不发起带回请求，也不覆盖输入', async f => {
     await f.draft('保留用户草稿'); await f.click('带回主会话')
-    assert(!f.requests.some(request => request.action && request.path === '/api/you-should-know'), '已有草稿仍请求带回')
+    assert(!f.requests.some(request => request.action && request.action !== 'history' && request.path === '/api/you-should-know'), '已有草稿仍请求带回')
     assert(!f.inserted(), '草稿被覆盖')
   }],
   ['输入在请求期间变化时 CAS 拒绝，不确认带回', async f => {
@@ -222,13 +242,111 @@ const tests: [string, (f: Awaited<ReturnType<typeof fixture>>) => Promise<void>]
   ['成功插入后才确认带回，并清除提醒', async f => {
     await f.click('带回主会话'); await pause()
     assert(f.inserted().includes('隔离测试提醒。'), '提醒没有写入输入')
-    assert(f.requests.filter(request => request.action && request.path === '/api/you-should-know').map(request => request.action).join(',') === 'chat,chat-confirm', '两阶段顺序错误')
+    assert(f.requests.filter(request => request.action && request.path === '/api/you-should-know' && request.viewId !== undefined).map(request => request.action).join(',') === 'chat,chat-confirm', '两阶段顺序错误')
     assert(!document.querySelector('.dshysk-card'), '确认后提醒未清除')
   }],
   ['卸载后的迟到动作不能写入输入或提交确认', async f => {
     f.holdAction(); await f.click('带回主会话'); f.unmount(); await f.releaseAction()
     assert(!f.inserted(), '卸载后仍插入输入')
     assert(!f.requests.some(request => request.action === 'chat-confirm'), '卸载后仍确认带回')
+  }],
+  ['无提醒时常驻按钮仍在，打开面板展示立即观察与历史', async f => {
+    await f.setView(undefined)
+    const trigger = document.querySelector<HTMLButtonElement>('.dshysk-trigger')
+    assert(trigger, '缺少常驻触发按钮')
+    assert(!document.querySelector('.dshysk-card'), '无提醒时面板不应打开')
+    trigger!.click()
+    await pause(); await pause()
+    const card = document.querySelector('.dshysk-card')
+    assert(card, '点击触发按钮没有打开面板')
+    assert(card!.textContent!.includes('立即观察'), '缺少立即观察入口')
+    assert(card!.textContent!.includes('历史提醒一。'), '缺少历史条目')
+    const bring = document.querySelector('.dshysk-history-detail button')
+    assert(!bring, '历史条目未展开就显示带回按钮')
+  }],
+  ['解释生成中禁用立即观察', async f => {
+    document.querySelector<HTMLButtonElement>('.dshysk-center-collapsed')!.click()
+    await pause(); await pause()
+    await f.setJob('explanation')
+    const check = [...document.querySelectorAll<HTMLButtonElement>('.dshysk-center-row button')]
+      .find(button => button.textContent === '立即观察')
+    assert(check, '缺少立即观察按钮')
+    assert(check!.disabled, '解释生成中仍可立即观察')
+  }],
+  ['观察进行中禁用展开解释', async f => {
+    await f.setView({ id: 'offer-test', kind: 'offer', line: '观察中的提醒。', tag: 'Heads up', shownAt: Date.now(), promptsSurvived: 0, expanded: false, origin: 'auto' })
+    await f.setJob('observation')
+    const expand = [...document.querySelectorAll<HTMLButtonElement>('.dshysk-actions button')]
+      .find(button => button.textContent === '展开解释')
+    assert(expand, '缺少展开解释按钮')
+    assert(expand!.disabled, '观察进行中仍可展开解释')
+  }],
+  ['新提醒自动展开且中心区折叠；提醒终结后面板收起', async f => {
+    assert(document.querySelector('.dshysk-card'), '新提醒没有自动展开面板')
+    assert(document.querySelector('.dshysk-center-collapsed'), '中心区没有折叠为一行')
+    const trigger = document.querySelector<HTMLButtonElement>('.dshysk-trigger')
+    assert(trigger, '面板打开时缺少常驻按钮')
+    assert(trigger!.getAttribute('aria-expanded') === 'true', '面板打开时常驻按钮未标记展开')
+    assert(document.querySelector('.dshysk-dot'), '面板打开时提示点不应消失')
+    await f.setView(undefined)
+    assert(!document.querySelector('.dshysk-card'), '提醒终结面板未收起')
+    assert(document.querySelector('.dshysk-trigger'), '收起后缺少常驻按钮')
+  }],
+  ['常驻按钮再次点击收起面板，再次点击重新打开', async f => {
+    assert(document.querySelector('.dshysk-card'), '初始提醒面板未自动打开')
+    const trigger = document.querySelector<HTMLButtonElement>('.dshysk-trigger')
+    assert(trigger, '面板打开时缺少常驻按钮')
+    trigger!.click()
+    await pause(); await pause()
+    assert(!document.querySelector('.dshysk-card'), '再次点击常驻按钮未收起面板')
+    assert(trigger!.getAttribute('aria-expanded') === 'false', '收起后 aria-expanded 未更新')
+    trigger!.click()
+    await pause(); await pause()
+    assert(document.querySelector('.dshysk-card'), '再次点击常驻按钮未重新打开面板')
+    assert(trigger!.getAttribute('aria-expanded') === 'true', '展开后 aria-expanded 未更新')
+  }],
+  ['手动展开中心区：立即观察发起请求并显示回执', async f => {
+    document.querySelector<HTMLButtonElement>('.dshysk-center-collapsed')!.click()
+    await pause(); await pause()
+    await f.click('立即观察')
+    assert(f.requests.some(request => request.action === 'check'), '没有发起手动观察请求')
+    await f.refresh()
+    const card = document.querySelector('.dshysk-card')!
+    assert(card.textContent!.includes('本次没有发现'), '缺少没有发现的回执')
+  }],
+  ['历史条目可展开解释并带回主会话', async f => {
+    document.querySelector<HTMLButtonElement>('.dshysk-center-collapsed')!.click()
+    await pause(); await pause()
+    document.querySelector<HTMLButtonElement>('.dshysk-history-line')!.click()
+    await pause(); await pause()
+    const detail = document.querySelector('.dshysk-history-detail')
+    assert(detail?.textContent?.includes('历史解释内容。'), '缺少历史解释')
+    detail!.querySelector<HTMLButtonElement>('button')!.click()
+    await pause()
+    assert(f.inserted().includes('历史提醒一。'), '历史条目未写入输入')
+  }],
+  ['收起面板后焦点回到触发按钮', async f => {
+    document.querySelector<HTMLButtonElement>('.dshysk-collapse')!.click()
+    await pause(); await pause()
+    assert(document.querySelector('.dshysk-trigger'), '收起后缺少触发按钮')
+    assert(document.activeElement?.classList.contains('dshysk-trigger'), '收起后焦点没有回到触发按钮')
+  }],
+  ['折叠行显示历史数量；展开后提醒终结不收面板', async f => {
+    const collapsed = document.querySelector('.dshysk-center-collapsed')
+    assert(collapsed?.textContent?.includes('1'), '折叠行缺少历史数量')
+    collapsed!.dispatchEvent(new Event('click', { bubbles: true }))
+    await pause(); await pause()
+    await f.setView(undefined)
+    assert(document.querySelector('.dshysk-card'), '用户展开过中心区后，提醒终结不应收起面板')
+  }],
+  ['关闭自动观察后隐藏立即观察，历史仍可回看', async f => {
+    await f.disable(true)
+    document.querySelector<HTMLButtonElement>('.dshysk-trigger')?.click()
+    await pause(); await pause()
+    const card = document.querySelector('.dshysk-card')!
+    assert(!card.textContent!.includes('立即观察'), '禁用后仍显示立即观察')
+    assert(card.textContent!.includes('历史提醒一。'), '禁用后历史不可回看')
+    assert(!card.textContent!.includes('隔离测试提醒'), '禁用后提醒卡片不应显示')
   }],
 ]
 let preview: Awaited<ReturnType<typeof fixture>> | undefined
